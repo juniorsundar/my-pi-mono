@@ -39,6 +39,16 @@ import {
 	process as pipelineProcess,
 	type OutputFormat,
 } from "./representation.js";
+import {
+	classify as ghClassify,
+	fetchGithubBlobContent as ghFetchBlob,
+	fetchGithubTree as ghFetchTree,
+	renderTree as ghRenderTree,
+	isGitHubResource as ghIsResource,
+	type GhBlobResult,
+	type GhTreeResult,
+	type RenderFormat as GhRenderFormat,
+} from "./github.js";
 
 // ---------------------------------------------------------------------------
 // Public types — the "ExtractedDocument" / FetchResponse surface (map bar).
@@ -585,11 +595,12 @@ export async function runDownload(
 /**
  * Fetch a URL and extract readable content (or download a binary).
  *
- * Direct port of fetch.py's `main()` minus the GitHub routing branch, which
- * lands in step 4/4 with github.ts. Behaviour:
+ * Direct port of fetch.py's `main()` including the GitHub routing branch
+ * (classify → tree/blob), wired to github.ts in step 4/4. Behaviour:
  *   - raw + download mutually exclusive → errorJson
- *   - download → runDownload
- *   - else → fetchResponse (text mode) → representation pipeline → successJson
+ *   - GitHub resource (repo_root/tree) → fetchGithubTree → render or canonical JSON
+ *   - GitHub blob → fetchGithubBlobContent → download / raw / text-extract path
+ *   - otherwise → fetchResponse (text mode) → representation pipeline → successJson
  *   - effective format: "raw" when raw, else format (default "markdown")
  *
  * Errors are returned as `errorJson` (never thrown to the caller), matching
@@ -613,8 +624,16 @@ export async function fetchUrl(
 			);
 		}
 
-		// TODO(step 4/4): GitHub routing — classify(url) → tree/blob branch.
-		// For now the generic HTTP path handles all URLs.
+		// GitHub routing — never fall back to HTML extraction for recognised
+		// github.com resources (repo_root, tree, blob).
+		const classified = ghClassify(url);
+		if (ghIsResource(classified)) {
+			if (classified.type === "repository_root" || classified.type === "tree") {
+				return await runGithubTree(url, classified, opts, maxChars, format);
+			} else {
+				return await runGithubBlob(url, classified, opts, maxChars, format, maxBytes);
+			}
+		}
 
 		if (opts.download) {
 			return await runDownload(url, timeout, maxBytes);
@@ -654,4 +673,160 @@ export async function fetchUrl(
 		const e = exc as Error;
 		return errorJson(e?.message ?? String(exc), url);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// GitHub routing helpers (tree + blob paths) — wired in step 4/4.
+// ---------------------------------------------------------------------------
+
+/** Error-result type guard used across the GitHub helpers. */
+function isGhError(r: GhTreeResult | GhBlobResult): r is { error: string; url: string; details: Record<string, unknown> } {
+	return typeof (r as { error?: unknown }).error === "string";
+}
+
+/** Repository-root / tree path: fetch tree, render (or canonical JSON), pipe. */
+async function runGithubTree(
+	url: string,
+	_resource: { type: string },
+	opts: FetchOptions,
+	maxChars: number,
+	format: "markdown" | "text",
+): Promise<FetchResult> {
+	const ghResult = await ghFetchTree(url);
+	if (isGhError(ghResult)) {
+		return errorJson(ghResult.error, url, ghResult.details);
+	}
+	const treeData = ghResult.data;
+	const sourceTruncated = ghResult.sourceTruncated;
+	const treeWarnings = ghResult.warnings;
+	const finalUrl = ghResult.finalUrl;
+	const statusCode = ghResult.statusCode;
+
+	let bodyStr: string;
+	let effectiveFormat: OutputFormat;
+	if (opts.raw) {
+		bodyStr = treeData.canonicalJson ?? "{}";
+		effectiveFormat = "raw";
+	} else {
+		effectiveFormat = format;
+		bodyStr = ghRenderTree(treeData, effectiveFormat as GhRenderFormat);
+	}
+	const contentType = opts.raw ? "application/json" : "text/plain; charset=utf-8";
+	const bodyBytes = Buffer.from(bodyStr, "utf-8");
+	const fetchedBytes = bodyBytes.length;
+
+	const pipeline = pipelineProcess({
+		body: bodyBytes,
+		contentType,
+		url,
+		outputFormat: opts.raw ? "text" : effectiveFormat,
+		maxChars,
+		raw: opts.raw,
+		sourceTruncated,
+	});
+
+	const allWarnings = [...treeWarnings, ...(pipeline.warnings ?? [])];
+	return successJson({
+		url,
+		finalUrl,
+		statusCode,
+		contentType,
+		title: pipeline.title,
+		outputFormat: effectiveFormat,
+		content: pipeline.content,
+		truncated: pipeline.truncated,
+		fetchedBytes,
+		warnings: allWarnings,
+		contentArtifactPath: pipeline.contentArtifactPath,
+		sourceTruncated: pipeline.sourceTruncated || sourceTruncated,
+	});
+}
+
+/** Blob path: fetch blob content, then download / raw / text-extract. */
+async function runGithubBlob(
+	url: string,
+	_resource: { type: string },
+	opts: FetchOptions,
+	maxChars: number,
+	format: "markdown" | "text",
+	maxBytes: number,
+): Promise<FetchResult> {
+	const ghResult = await ghFetchBlob(url);
+	if (isGhError(ghResult)) {
+		return errorJson(ghResult.error, url, ghResult.details);
+	}
+	const decodedBytes = ghResult.data;
+	const contentType = ghResult.contentType;
+	const name = ghResult.name;
+	const finalUrl = ghResult.finalUrl;
+	const statusCode = ghResult.statusCode;
+
+	if (opts.download) {
+		if (!isDownloadSupported(contentType)) {
+			throw new FetchError(
+				`Download is not supported for content type '${contentType}'. ` +
+				`Supported types: ${[...SUPPORTED_DOWNLOAD_TYPES].sort().join(", ")}.`,
+				{ url, contentType },
+			);
+		}
+		if (decodedBytes.length > maxBytes) {
+			throw new FetchError(
+				`Content exceeds maximum download size of ${maxBytes} bytes ` +
+				`(actual: ${decodedBytes.length} bytes).`,
+				{ url, byteSize: decodedBytes.length, maxBytes },
+			);
+		}
+		const sha1 = crypto.createHash("sha1").update(decodedBytes).digest("hex");
+		const extension = extensionFor(contentType, name);
+		const fileName = `web-fetch-${sha1.slice(0, 12)}${extension}`;
+		let targetPath = path.join(os.tmpdir(), fileName);
+		if (fs.existsSync(targetPath) && fs.statSync(targetPath).size !== decodedBytes.length) {
+			targetPath = path.join(os.tmpdir(), `web-fetch-${sha1.slice(0, 12)}-${sha1.slice(0, 8)}${extension}`);
+		}
+		fs.writeFileSync(targetPath, decodedBytes);
+		return downloadJson({
+			url,
+			finalUrl,
+			statusCode,
+			contentType,
+			path: targetPath,
+			fileName,
+			byteSize: decodedBytes.length,
+			sha1,
+			warnings: [],
+		});
+	}
+
+	// Text / raw mode: detect binary content.
+	if (isBinaryContent(decodedBytes)) {
+		return errorJson(
+			"Detected binary blob. Use `download: true` to obtain the file via the GitHub API.",
+			url,
+			{ url, contentType, name },
+		);
+	}
+
+	const effectiveFormat: OutputFormat = opts.raw ? "raw" : format;
+	const pipeline = pipelineProcess({
+		body: decodedBytes,
+		contentType,
+		url,
+		outputFormat: opts.raw ? "text" : effectiveFormat,
+		maxChars,
+		raw: opts.raw,
+	});
+	return successJson({
+		url,
+		finalUrl,
+		statusCode,
+		contentType,
+		title: pipeline.title,
+		outputFormat: effectiveFormat,
+		content: pipeline.content,
+		truncated: pipeline.truncated,
+		fetchedBytes: decodedBytes.length,
+		warnings: pipeline.warnings,
+		contentArtifactPath: pipeline.contentArtifactPath,
+		sourceTruncated: pipeline.sourceTruncated,
+	});
 }
