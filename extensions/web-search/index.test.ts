@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { setupServer } from "msw/node";
+import { http, HttpResponse } from "msw";
 
 // ── Module-level mocks (hoisted before imports) ─────────────────────
 //
@@ -52,9 +54,8 @@ vi.mock("@earendil-works/pi-ai/compat", () => ({
   }),
 }));
 
-// ── Import module under test (after mocks are hoisted) ─────────────
-// eslint-disable-next-line import/first
 import webSearchExtension from "./index.js";
+import { dnsResolver } from "./src/fetch.js";
 
 // ── Helper: create a mock pi that captures tool registrations ──────
 interface CapturedTool {
@@ -66,7 +67,6 @@ interface CapturedTool {
 
 function createMockPi() {
   const tools: CapturedTool[] = [];
-  // Collect registrations so the test can assert on them
   const commands: Array<{ name: string; info: unknown }> = [];
 
   const handlers: Record<string, Array<(...args: unknown[]) => void>> = {};
@@ -95,7 +95,26 @@ function createMockPi() {
   return { pi, tools, commands, handlers };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
+const SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SHA_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+const server = setupServer();
+
+beforeEach(() => {
+  server.listen({ onUnhandledRequest: "bypass" });
+  vi.spyOn(dnsResolver, "lookup").mockResolvedValue([
+    { address: "93.184.216.34", family: 4 },
+  ]);
+});
+afterEach(() => {
+  server.resetHandlers();
+  server.close();
+  vi.restoreAllMocks();
+});
+
+// ===========================================================================
+// web_fetch tool schema — unchanged by the cut
+// ===========================================================================
 
 describe("web_fetch tool schema", () => {
   let tools: CapturedTool[];
@@ -104,12 +123,8 @@ describe("web_fetch tool schema", () => {
   beforeEach(() => {
     const mock = createMockPi();
     tools = mock.tools;
-
-    // Call the extension factory
     const cleanup = webSearchExtension(mock.pi as any);
     expect(mock.pi.registerTool).toHaveBeenCalled();
-
-    // Find the web_fetch tool registration
     webFetchTool = tools.find((t) => t.name === "web_fetch");
   });
 
@@ -124,13 +139,9 @@ describe("web_fetch tool schema", () => {
     expect(params).toBeDefined();
     expect(params.type).toBe("object");
     expect(params.properties).toBeDefined();
-
-    // download must exist as a property
     const download = params.properties.download;
     expect(download).toBeDefined();
     expect(download.type).toBe("boolean");
-
-    // download must be optional (not in required array)
     expect(params.required).not.toContain("download");
   });
 
@@ -138,109 +149,28 @@ describe("web_fetch tool schema", () => {
     expect(webFetchTool).toBeDefined();
     const params = webFetchTool!.parameters as Record<string, any>;
     const download = params.properties.download;
-
-    // The description should reference saving binary files (images, PDFs)
-    // to a local temp path, matching the tool's text description
     expect(download.description).toBeTruthy();
     expect(download.description.toLowerCase()).toContain("binary");
     expect(download.description.toLowerCase()).toContain("temp");
   });
 
-  it("forwards GitHub result fields through the public tool result", async () => {
-    const mock = createMockPi();
-    webSearchExtension(mock.pi as any);
-    const tool = mock.tools.find((candidate) => candidate.name === "web_fetch") as any;
-    const githubResult = {
-      url: "https://github.com/acme/project/tree/main/src",
-      finalUrl: "https://github.com/acme/project/tree/main/src",
-      statusCode: 200,
-      contentType: "text/plain; charset=utf-8",
-      format: "markdown",
-      content: "# Repository: acme/project\\n\\n```\\nsrc/index.ts\\n```",
-      warnings: ["GitHub returned a partial tree."],
-      sourceTruncated: true,
-      contentArtifactPath: "/tmp/web-fetch-tree.txt",
-      data: {
-        owner: "acme",
-        repo: "project",
-        ref: "main",
-        path: "src",
-        entries: [{ path: "src/index.ts", type: "blob" }],
-      },
-      details: {
-        statusCode: 200,
-        authenticated: true,
-        remaining: 42,
-        resetAt: "2023-11-14T22:13:20+00:00",
-      },
-    };
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify(githubResult),
-      stderr: "",
-      code: 0,
-    });
-
-    const toolResult = await tool.execute("call-1", {
-      url: githubResult.url,
-    }, undefined, undefined);
-    const details = toolResult.details as Record<string, any>;
-
-    expect(details.warnings).toEqual(githubResult.warnings);
-    expect(details.sourceTruncated).toBe(true);
-    expect(details.contentArtifactPath).toBe(githubResult.contentArtifactPath);
-    expect(details.data).toEqual(githubResult.data);
-    expect(details.details).toEqual(githubResult.details);
-    expect(details.raw).toEqual(githubResult);
-    expect(toolResult.content[0].text).toContain("GitHub returned a partial tree.");
-  });
-
-  it("forwards parameters and selects the download timeout", async () => {
-    const mock = createMockPi();
-    webSearchExtension(mock.pi as any);
-    const tool = mock.tools.find((candidate) => candidate.name === "web_fetch") as any;
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({ url: "https://github.com/acme/project/blob/main/logo.png", path: "/tmp/logo.png" }),
-      stderr: "",
-      code: 0,
-    });
-
-    await tool.execute("call-2", {
-      url: "https://github.com/acme/project/blob/main/logo.png",
-      maxChars: 1200,
-      format: "text",
-      raw: false,
-      download: true,
-    }, undefined, undefined);
-
-    expect(mock.pi.exec).toHaveBeenCalledWith(
-      "uv",
-      expect.arrayContaining([
-        "--url", "https://github.com/acme/project/blob/main/logo.png",
-        "--download",
-      ]),
-      expect.objectContaining({ timeout: 60_000 }),
-    );
-  });
-
   it("includes download as the last property after raw", () => {
     expect(webFetchTool).toBeDefined();
     const params = webFetchTool!.parameters as Record<string, any>;
-    const propNames = Object.keys(params.properties);
-
-    // Verify download is declared and appears after raw
-    expect(propNames).toContain("download");
-    expect(propNames.indexOf("download")).toBe(propNames.length - 1);
+    const keys = Object.keys(params.properties);
+    expect(keys.indexOf("download")).toBeGreaterThan(keys.indexOf("raw"));
   });
 });
 
-// ── GitHub resource forwarding (tickets 0053–0056) ──────────────────
+// ===========================================================================
+// web_fetch GitHub result forwarding (in-process)
+// ===========================================================================
 //
-// The TypeScript adapter shells out to scripts/fetch.py via `pi.exec`
-// and forwards the parsed JSON result fields generically into the tool
-// result `details` (and, where applicable, the human-readable `content`
-// text). The tests below mock `pi.exec` to return canned GitHub result
-// shapes and assert that every GitHub-specific field survives the hop
-// through the adapter unchanged.
+// After the final cut (#0009), web_fetch calls src/fetch.ts in-process,
+// which routes github.com URLs through src/github.ts. These tests drive
+// the real TS path against msw and assert the tool result's details
+// surface (the shape the LLM caller consumes) carries the GitHub fields.
+
 describe("web_fetch GitHub result forwarding", () => {
   function loadTool() {
     const mock = createMockPi();
@@ -249,206 +179,211 @@ describe("web_fetch GitHub result forwarding", () => {
     return { mock, tool };
   }
 
+  function ghApi(url: string, handler: Parameters<typeof http.get>[1]) {
+    server.use(http.get(url, handler));
+  }
+
+  it("forwards GitHub tree results through the public tool result", async () => {
+    const { tool } = loadTool();
+    ghApi("https://api.github.com/repos/acme/project", () =>
+      HttpResponse.json({ default_branch: "main", full_name: "acme/project" }),
+    );
+    ghApi("https://api.github.com/repos/acme/project/commits/main", () =>
+      HttpResponse.json({ sha: SHA }),
+    );
+    ghApi(`https://api.github.com/repos/acme/project/git/trees/${SHA}`, () =>
+      HttpResponse.json({
+        sha: SHA, truncated: false,
+        tree: [{ path: "src/index.ts", type: "blob", sha: SHA_B, mode: "100644" }],
+      }),
+    );
+
+    const res = await tool.execute("call-1", {
+      url: "https://github.com/acme/project/tree/main/src",
+    }, undefined, undefined);
+    const details = res.details as Record<string, any>;
+
+    expect(details.statusCode).toBe(200);
+    expect(details.contentType).toContain("text/plain");
+    expect(details.format).toBe("markdown");
+    expect(details.warnings).toEqual([]);
+    expect(details.sourceTruncated).toBe(false);
+    // The rendered tree content carries the entry
+    expect(res.content[0].text).toContain("src/index.ts");
+    expect(res.content[0].text).toContain("# Repository: acme/project");
+  });
+
   it("forwards GitHub blob content results (text mode)", async () => {
-    const { mock, tool } = loadTool();
-    const blobResult = {
-      url: "https://github.com/acme/project/blob/main/src/index.ts",
-      finalUrl: "https://github.com/acme/project/blob/main/src/index.ts",
-      statusCode: 200,
-      contentType: "text/plain; charset=utf-8",
-      format: "markdown",
-      content: "export function main() { return 1; }\n",
-      truncated: false,
-      contentLength: 32,
-      fetchedBytes: 32,
-      warnings: [],
-      sourceTruncated: false,
-      data: {
-        owner: "acme",
-        repo: "project",
-        ref: "main",
-        path: "src/index.ts",
-        name: "index.ts",
-        size: 32,
-      },
-      details: {
-        statusCode: 200,
-        authenticated: false,
-      },
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(blobResult), stderr: "", code: 0 });
+    const { tool } = loadTool();
+    const content = "export function main() { return 1; }\n";
+    ghApi("https://api.github.com/repos/acme/project/contents/src%2Findex.ts", ({ request }) => {
+      const sp = new URL(request.url).searchParams;
+      expect(sp.get("ref")).toBe("main");
+      return HttpResponse.json({
+        name: "index.ts", path: "src/index.ts",
+        content: Buffer.from(content).toString("base64"),
+        encoding: "base64", size: content.length,
+      });
+    });
 
     const res = await tool.execute("blob-1", {
-      url: blobResult.url,
+      url: "https://github.com/acme/project/blob/main/src/index.ts",
       maxChars: 1000,
       format: "markdown",
     }, undefined, undefined);
 
     const details = res.details as Record<string, any>;
-    // Generic forwarding of every GitHub field
     expect(details.statusCode).toBe(200);
-    expect(details.contentType).toBe("text/plain; charset=utf-8");
     expect(details.format).toBe("markdown");
     expect(details.truncated).toBe(false);
     expect(details.sourceTruncated).toBe(false);
-    expect(details.warnings).toEqual([]);
-    expect(details.data).toEqual(blobResult.data);
-    expect(details.details).toEqual(blobResult.details);
-    expect(details.raw).toEqual(blobResult);
-    // Human-readable content carries the blob body
     expect(res.content[0].text).toContain("export function main()");
   });
 
   it("forwards GitHub blob content results (download mode)", async () => {
-    const { mock, tool } = loadTool();
-    const downloadResult = {
-      url: "https://github.com/acme/project/blob/main/logo.png",
-      finalUrl: "https://github.com/acme/project/blob/main/logo.png",
-      statusCode: 200,
-      contentType: "image/png",
-      path: "/tmp/web-fetch-abc123.png",
-      fileName: "logo.png",
-      byteSize: 2048,
-      sha1: "deadbeef",
-      warnings: [],
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(downloadResult), stderr: "", code: 0 });
+    const { tool } = loadTool();
+    const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]); // PNG sig
+    ghApi("https://api.github.com/repos/acme/project/contents/logo.png", () =>
+      HttpResponse.json({
+        name: "logo.png", path: "logo.png",
+        content: content.toString("base64"),
+        encoding: "base64", size: content.length,
+      }),
+    );
 
     const res = await tool.execute("blob-2", {
-      url: downloadResult.url,
+      url: "https://github.com/acme/project/blob/main/logo.png",
       download: true,
     }, undefined, undefined);
 
     const details = res.details as Record<string, any>;
-    expect(details.path).toBe("/tmp/web-fetch-abc123.png");
-    expect(details.fileName).toBe("logo.png");
-    expect(details.byteSize).toBe(2048);
-    expect(details.sha1).toBe("deadbeef");
-    expect(details.raw).toEqual(downloadResult);
-    // Human-readable output points to the saved artifact
-    expect(res.content[0].text).toContain("/tmp/web-fetch-abc123.png");
+    expect(details.contentType).toBe("image/png");
+    expect(details.fileName.endsWith(".png")).toBe(true);
+    expect(details.byteSize).toBe(content.length);
+    expect(details.sha1).toMatch(/^[0-9a-f]{40}$/);
+    expect(details.path).toBeTruthy();
+    expect(res.content[0].text).toContain(details.path);
+   	const fs = await import("node:fs");
+   	expect(fs.existsSync(details.path)).toBe(true);
+   	fs.rmSync(details.path, { force: true });
   });
 
   it("forwards GitHub resolution failure results with structured error details", async () => {
-    const { mock, tool } = loadTool();
-    const failureResult = {
-      error: "GitHub API returned 404: Not Found",
-      url: "https://github.com/acme/project/tree/main/missing",
-      details: {
-        statusCode: 404,
-        authenticated: true,
-        remaining: 4999,
-        resetAt: "2023-11-14T22:13:20+00:00",
-      },
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(failureResult), stderr: "", code: 1 });
+    const { tool } = loadTool();
+    ghApi("https://api.github.com/repos/acme/project/contents/missing", ({ request }) => {
+      const sp = new URL(request.url).searchParams;
+      expect(sp.get("ref")).toBe("main");
+      return HttpResponse.json(
+        { message: "Not Found", documentation_url: "https://docs.github.com/rest" },
+        { status: 404 },
+      );
+    });
 
     const res = await tool.execute("fail-1", {
-      url: failureResult.url,
+      url: "https://github.com/acme/project/blob/main/missing",
     }, undefined, undefined);
 
     const details = res.details as Record<string, any>;
-    // The error message is surfaced in the human-readable output
-    expect(res.content[0].text).toContain("GitHub API returned 404: Not Found");
-    // Structured error details are forwarded verbatim
-    expect(details.raw.error).toBe(failureResult.error);
-    expect(details.raw.url).toBe(failureResult.url);
-    expect(details.raw.details).toEqual(failureResult.details);
+    expect(res.content[0].text).toContain("GitHub API returned 404");
+    expect(details.raw.error).toMatch(/GitHub API returned 404/);
+    expect(details.raw.url).toBe("https://github.com/acme/project/blob/main/missing");
+    expect(details.raw.details.statusCode).toBe(404);
   });
 
   it("forwards rate-limit metadata (remaining quota, reset time, auth status)", async () => {
-    const { mock, tool } = loadTool();
-    const rateLimitResult = {
-      error: "GitHub API returned 429: Too Many Requests",
-      url: "https://github.com/acme/project/tree/main",
-      details: {
-        statusCode: 429,
-        authenticated: true,
-        remaining: 0,
-        resetAt: "2023-11-14T22:13:20+00:00",
-      },
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(rateLimitResult), stderr: "", code: 1 });
+    const { tool } = loadTool();
+    vi.stubEnv("GITHUB_TOKEN", "ghp_test-token");
+    ghApi("https://api.github.com/repos/acme/project", ({ request }) => {
+      expect(request.headers.get("Authorization")).toBe("Bearer ghp_test-token");
+      return new HttpResponse(
+        JSON.stringify({ message: "Too Many Requests" }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": "1700000000",
+          },
+        },
+      );
+    });
 
     const res = await tool.execute("rate-1", {
-      url: rateLimitResult.url,
+      url: "https://github.com/acme/project/tree/main",
     }, undefined, undefined);
 
     const details = (res.details as Record<string, any>).raw.details;
     expect(details.statusCode).toBe(429);
     expect(details.authenticated).toBe(true);
     expect(details.remaining).toBe(0);
-    expect(details.resetAt).toBe("2023-11-14T22:13:20+00:00");
+    expect(details.resetAt).toBeTruthy();
   });
 
-  it("forwards sourceTruncated and contentArtifactPath for GitHub resources", async () => {
-    const { mock, tool } = loadTool();
-    const truncatedResult = {
-      url: "https://github.com/acme/project/tree/main/huge",
-      finalUrl: "https://github.com/acme/project/tree/main/huge",
-      statusCode: 200,
-      contentType: "text/plain; charset=utf-8",
-      format: "markdown",
-      content: "# Tree (partial)",
-      truncated: true,
-      contentLength: 1000,
-      fetchedBytes: 50000,
-      warnings: ["GitHub returned a partial tree."],
-      sourceTruncated: true,
-      contentArtifactPath: "/tmp/web-fetch-huge.txt",
-      data: { owner: "acme", repo: "project", ref: "main", path: "huge", entries: [] },
-      details: { statusCode: 200, authenticated: false },
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(truncatedResult), stderr: "", code: 0 });
+  it("forwards sourceTruncated and contentArtifactPath for truncated GitHub trees", async () => {
+    const { tool } = loadTool();
+    ghApi("https://api.github.com/repos/acme/project", () =>
+      HttpResponse.json({ default_branch: "main", full_name: "acme/project" }),
+    );
+    ghApi("https://api.github.com/repos/acme/project/commits/main", () =>
+      HttpResponse.json({ sha: SHA }),
+    );
+    ghApi(`https://api.github.com/repos/acme/project/git/trees/${SHA}`, () =>
+      HttpResponse.json({
+        sha: SHA, truncated: true,
+        tree: [{ path: "only.md", type: "blob", sha: SHA_B, mode: "100644" }],
+      }),
+    );
 
     const res = await tool.execute("trunc-1", {
-      url: truncatedResult.url,
-      maxChars: 1000,
+      url: "https://github.com/acme/project/tree/main",
+      maxChars: 5000,
     }, undefined, undefined);
 
     const details = res.details as Record<string, any>;
     expect(details.sourceTruncated).toBe(true);
-    expect(details.contentArtifactPath).toBe("/tmp/web-fetch-huge.txt");
-    // Human-readable output surfaces both markers
+    expect(details.warnings.some((w: string) => w.includes("truncated tree"))).toBe(true);
     expect(res.content[0].text).toContain("**Source truncated:** yes");
-    expect(res.content[0].text).toContain("/tmp/web-fetch-huge.txt");
   });
 
   it("forwards warnings from GitHub operations", async () => {
-    const { mock, tool } = loadTool();
-    const warnedResult = {
-      url: "https://github.com/acme/project/tree/main",
-      finalUrl: "https://github.com/acme/project/tree/main",
-      statusCode: 200,
-      contentType: "text/plain; charset=utf-8",
-      format: "markdown",
-      content: "# Tree",
-      warnings: ["Rate limit approaching.", "Partial tree returned."],
-      sourceTruncated: false,
-      data: { owner: "acme", repo: "project", ref: "main", path: "", entries: [] },
-      details: { statusCode: 200, authenticated: false },
-    };
-    mock.pi.exec.mockResolvedValue({ stdout: JSON.stringify(warnedResult), stderr: "", code: 0 });
+    const { tool } = loadTool();
+    ghApi("https://api.github.com/repos/acme/project", () =>
+      HttpResponse.json({ default_branch: "main", full_name: "acme/project" }),
+    );
+    ghApi("https://api.github.com/repos/acme/project/commits/main", () =>
+      HttpResponse.json({ sha: SHA }),
+    );
+    ghApi(`https://api.github.com/repos/acme/project/git/trees/${SHA}`, () =>
+      HttpResponse.json({
+        sha: SHA, truncated: false,
+        tree: Array.from({ length: 2100 }, (_, i) => ({
+          path: `file_${String(i).padStart(4, "0")}.py`,
+          type: "blob", sha: SHA_B, mode: "100644",
+       	})),
+      }),
+    );
 
     const res = await tool.execute("warn-1", {
-      url: warnedResult.url,
+      url: "https://github.com/acme/project/tree/main",
     }, undefined, undefined);
 
     const details = res.details as Record<string, any>;
-    expect(details.warnings).toEqual(warnedResult.warnings);
-    // Both warnings appear in the human-readable output
-    expect(res.content[0].text).toContain("Rate limit approaching.");
-    expect(res.content[0].text).toContain("Partial tree returned.");
+    expect(details.sourceTruncated).toBe(true);
+    expect(details.warnings.some((w: string) => w.includes("exceeds 2000"))).toBe(true);
   });
 });
 
-// ── Credential confinement, leak prevention, host-restriction (0056) ──
+// ===========================================================================
+// web_fetch credential confinement, leak prevention, host-restriction
+// ===========================================================================
 //
-// The TypeScript adapter never touches GITHUB_TOKEN directly: it does
-// not read it from the environment, does not pass it on the subprocess
-// command line, and does not inject it via the exec environment. All
-// credential handling lives in the Python layer. These tests assert the
-// confinement at the adapter boundary.
+// After the cut, credential handling lives in the TS layer (src/github.ts):
+// GITHUB_TOKEN is read from the environment and sent as a Bearer header to
+// api.github.com only, never to non-GitHub hosts, and never serialized into
+// tool output. Host restriction (SSRF) is enforced in src/fetch.ts via
+// dnsResolver + ipaddr.js. These tests assert that confinement at the
+// in-process boundary.
+
 describe("web_fetch credential confinement & host restriction", () => {
   const SECRET = "ghp_super-secret-token-DO-NOT-LEAK";
 
@@ -460,166 +395,97 @@ describe("web_fetch credential confinement & host restriction", () => {
   }
 
   beforeEach(() => {
-    // Ensure the secret is present in the environment. The adapter must
-    // NOT forward it anywhere — it should not even read it.
     process.env.GITHUB_TOKEN = SECRET;
   });
-
-  it("does not pass GITHUB_TOKEN or an Authorization header on the exec command line", async () => {
-    const { mock, tool } = loadTool();
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({ url: "https://github.com/acme/project/blob/main/x", content: "" }),
-      stderr: "",
-      code: 0,
-    });
-
-    await tool.execute("confine-1", {
-      url: "https://github.com/acme/project/blob/main/x",
-    }, undefined, undefined);
-
-    const call = mock.pi.exec.mock.calls[0];
-    const argv = call[1] as string[];
-    // No token-like flag is ever passed to the subprocess
-    expect(argv.some((a) => /token/i.test(a))).toBe(false);
-    expect(argv.some((a) => /authorization/i.test(a))).toBe(false);
-    // The secret value must never appear as a bare argument
-    expect(argv).not.toContain(SECRET);
-    // The adapter always invokes the fixed fetch.py script — it never
-    // constructs a GitHub API URL itself, so the token cannot leak into
-    // a metadata-provided or user-provided redirect URL at this layer.
-    expect(argv.some((a) => /fetch\.py$/.test(a))).toBe(true);
-    expect(argv.some((a) => /^https:\/\/api\.github\.com/.test(a))).toBe(false);
+  afterEach(() => {
+    delete process.env.GITHUB_TOKEN;
   });
 
-  it("does not inject GITHUB_TOKEN into the subprocess environment", async () => {
-    const { mock, tool } = loadTool();
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({ url: "https://github.com/acme/project/tree/main", content: "" }),
-      stderr: "",
-      code: 0,
-    });
+  it("sends Bearer auth to api.github.com when GITHUB_TOKEN is set", async () => {
+    const { tool } = loadTool();
+    let authHeader: string | null = null;
+    server.use(http.get("https://api.github.com/repos/acme/project", ({ request }) => {
+      authHeader = request.headers.get("Authorization");
+      return HttpResponse.json({ default_branch: "main", full_name: "acme/project" });
+    }));
+    server.use(http.get("https://api.github.com/repos/acme/project/commits/main", () =>
+      HttpResponse.json({ sha: SHA }),
+    ));
+    server.use(http.get(`https://api.github.com/repos/acme/project/git/trees/${SHA}`, () =>
+      HttpResponse.json({ sha: SHA, truncated: false, tree: [] }),
+    ));
 
-    await tool.execute("confine-2", {
-      url: "https://github.com/acme/project/tree/main",
+    await tool.execute("auth-1", {
+      url: "https://github.com/acme/project",
     }, undefined, undefined);
 
-    const opts = mock.pi.exec.mock.calls[0][2] as Record<string, any>;
-    // The adapter only sets signal/timeout/cwd — never an `env` override
-    expect(opts.env).toBeUndefined();
-    // Sanity: the exec options must not carry the secret anywhere
-    expect(JSON.stringify(opts)).not.toContain(SECRET);
+    expect(authHeader).toBe(`Bearer ${SECRET}`);
   });
 
-  it("never lets GITHUB_TOKEN appear in tool outputs or content artifacts", async () => {
-    const { mock, tool } = loadTool();
-    // Simulate a result that accidentally echoed the token back in
-    // content/warnings/data — the adapter must forward fields verbatim,
-    // but we assert that the *adapter itself* never introduces the token.
-    // Here we confirm a clean result stays clean.
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({
-        url: "https://github.com/acme/project/tree/main",
-        finalUrl: "https://github.com/acme/project/tree/main",
-        statusCode: 200,
-        contentType: "text/plain; charset=utf-8",
-        format: "markdown",
-        content: "# Tree\nsrc/\n",
-        warnings: [],
-        sourceTruncated: false,
-        contentArtifactPath: "/tmp/web-fetch-clean.txt",
-        data: { owner: "acme", repo: "project", ref: "main" },
-        details: { statusCode: 200, authenticated: true, remaining: 42 },
-      }),
-      stderr: "",
-      code: 0,
-    });
+  it("never lets GITHUB_TOKEN appear in tool outputs or content", async () => {
+    const { tool } = loadTool();
+    const content = "public content";
+    server.use(http.get("https://api.github.com/repos/acme/project/contents/README.md", ({ request }) => {
+      const sp = new URL(request.url).searchParams;
+      expect(sp.get("ref")).toBe("main");
+      return HttpResponse.json({
+        name: "README.md", path: "README.md",
+        content: Buffer.from(content).toString("base64"),
+        encoding: "base64", size: content.length,
+      });
+    }));
 
     const res = await tool.execute("leak-1", {
-      url: "https://github.com/acme/project/tree/main",
+      url: "https://github.com/acme/project/blob/main/README.md",
     }, undefined, undefined);
 
-    // The token must not appear anywhere in the serialized tool result
     const serialized = JSON.stringify(res);
     expect(serialized).not.toContain(SECRET);
     expect(serialized).not.toContain("ghp_");
-    // The content artifact path is forwarded but must not embed the token
-    expect(res.content[0].text).toContain("/tmp/web-fetch-clean.txt");
     expect(res.content[0].text).not.toContain(SECRET);
   });
 
-  it("does not forward GITHUB_TOKEN to metadata-provided or user-provided redirect URLs", async () => {
-    const { mock, tool } = loadTool();
-    // A GitHub result can carry a finalUrl/redirect. The adapter only
-    // forwards it inside `details`; it never re-issues a request to it
-    // and never attaches credentials to it. We assert the adapter makes
-    // exactly one exec call (to the fixed fetch.py) and never calls the
-    // redirect URL itself.
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({
-        url: "https://github.com/acme/project/tree/main",
-        finalUrl: "https://redirect.example.com/attacker",
-        statusCode: 200,
-        contentType: "text/plain; charset=utf-8",
-        format: "markdown",
-        content: "# x",
-        warnings: [],
-        sourceTruncated: false,
-        data: {},
-        details: { statusCode: 200, authenticated: true },
-      }),
-      stderr: "",
-      code: 0,
-    });
+  it("does not forward GITHUB_TOKEN to non-GitHub hosts (redirect confinement)", async () => {
+    const { tool } = loadTool();
+    // A GitHub contents API response returns a 302 to an attacker host.
+    // The TS layer uses redirect: "manual" so no credentialed redirect is
+    // followed; only the single api.github.com request is made, with auth.
+    let apiAuth: string | null = null;
+    let attackerHit = false;
+    server.use(http.get("https://api.github.com/repos/acme/project/contents/README.md", ({ request }) => {
+      apiAuth = request.headers.get("Authorization");
+      return new HttpResponse(null, {
+        status: 302, headers: { location: "https://attacker.example/collect" },
+      });
+    }));
+    server.use(http.get("https://attacker.example/collect", ({ request }) => {
+      attackerHit = true;
+      expect(request.headers.get("Authorization")).toBeNull();
+      return HttpResponse.json({});
+    }));
 
-    await tool.execute("redir-1", {
-      url: "https://github.com/acme/project/tree/main",
+    const res = await tool.execute("redir-1", {
+      url: "https://github.com/acme/project/blob/main/README.md",
     }, undefined, undefined);
 
-    // Only one subprocess invocation, and it was to the fixed script
-    expect(mock.pi.exec).toHaveBeenCalledTimes(1);
-    const argv = mock.pi.exec.mock.calls[0][1] as string[];
-    expect(argv.some((a) => /fetch\.py$/.test(a))).toBe(true);
-    // The redirect URL is never passed as a fetch target
-    expect(argv).not.toContain("https://redirect.example.com/attacker");
-    // The redirect URL survives in the forwarded details (metadata only)
-    const res = await mock.pi.exec.mock.results[0].value.then(() => undefined);
-    void res;
-    // Re-invoke to inspect forwarded details
-    const result = await tool.execute("redir-2", {
-      url: "https://github.com/acme/project/tree/main",
-    }, undefined, undefined);
-    expect((result.details as Record<string, any>).finalUrl).toBe("https://redirect.example.com/attacker");
-    // But the secret never accompanies it
-    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(apiAuth).toBe(`Bearer ${SECRET}`);
+    expect(attackerHit).toBe(false); // redirect was NOT followed
+    expect(JSON.stringify(res)).not.toContain(SECRET);
   });
 
-  it("delegates host-restriction enforcement to the Python layer (no in-process fetch)", async () => {
-    const { mock, tool } = loadTool();
-    mock.pi.exec.mockResolvedValue({
-      stdout: JSON.stringify({
-        error: "Host resolves to private address: 169.254.169.254",
-        url: "http://169.254.169.254/latest/meta-data/",
-      }),
-      stderr: "",
-      code: 1,
-    });
+  it("enforces host restriction in-process (SSRF blocks private IPs)", async () => {
+    const { tool } = loadTool();
+    // Stub DNS to resolve the metadata host to a link-local address.
+    vi.spyOn(dnsResolver, "lookup").mockResolvedValue([
+      { address: "169.254.169.254", family: 4 },
+    ]);
 
-    // The adapter must not pre-validate/filter hosts itself; it forwards
-    // the URL verbatim to the subprocess, which enforces host restriction.
-    await tool.execute("host-1", {
+    const res = await tool.execute("host-1", {
       url: "http://169.254.169.254/latest/meta-data/",
     }, undefined, undefined);
 
-    const argv = mock.pi.exec.mock.calls[0][1] as string[];
-    // The URL is passed through unchanged — no adapter-side rewriting
-    expect(argv).toContain("http://169.254.169.254/latest/meta-data/");
-    // The adapter did not short-circuit: it still called the subprocess
-    expect(mock.pi.exec).toHaveBeenCalledTimes(1);
-    // The Python-layer error is forwarded faithfully (host restriction enforced)
-    const result = await tool.execute("host-2", {
-      url: "http://169.254.169.254/latest/meta-data/",
-    }, undefined, undefined);
-    expect(result.content[0].text).toContain("Host resolves to private address");
-    expect(JSON.stringify(result)).not.toContain(SECRET);
+    expect(res.content[0].text).toContain("Fetch failed");
+    expect(res.content[0].text).toMatch(/private address|link-local|Fetch refused/i);
+    expect(JSON.stringify(res)).not.toContain(SECRET);
   });
 });

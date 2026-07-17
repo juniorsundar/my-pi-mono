@@ -3,6 +3,10 @@ import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import {
+	search as runSearchInternal,
+	fetchUrl as fetchUrlInternal,
+} from "./src/index.js";
 
 interface SearchResult {
 	title: string;
@@ -101,14 +105,6 @@ const WebFetchParams = Type.Object({
 });
 
 const EXTENSION_DIR = __dirname;
-const SEARCH_SCRIPT = path.join(EXTENSION_DIR, "scripts", "search.py");
-const FETCH_SCRIPT = path.join(EXTENSION_DIR, "scripts", "fetch.py");
-
-function getUvBinary(): string {
-	// The uv binary should be on PATH in the pi environment.
-	// The session_start handler runs `uv --version` to confirm availability.
-	return "uv";
-}
 
 function getSettingsPath(): string {
 	const home = process.env.HOME || "";
@@ -165,36 +161,17 @@ async function runSearch(
 		return { error: error?.message ?? String(error) };
 	}
 
-	const uv = getUvBinary();
-	const args = [
-		"run",
-		"--project",
-		EXTENSION_DIR,
-		"python",
-		SEARCH_SCRIPT,
-		"--searxng-url",
-		searxngUrl,
-		"--query",
-		params.query,
-		"--max-results",
-		String(clampMaxResults(params.maxResults)),
-		"--language",
-		params.language ?? "all",
-		"--safesearch",
-		params.safesearch ?? "moderate",
-	];
-
-	if (params.categories) args.push("--categories", params.categories);
-	if (params.timelimit) args.push("--timelimit", params.timelimit);
-
+	// In-process call to the TS port (final cut, #0009). Previously this
+	// shelled out to `uv run --project . python scripts/search.py`.
 	try {
-		const result = await pi.exec(uv, args, { signal, timeout: timeoutMs, cwd: EXTENSION_DIR });
-		const output = result.stdout.trim();
-		if (!output) return { error: result.stderr.trim() || `Search exited with code ${result.code}` };
-
-		const parsed = JSON.parse(output) as SearchResponse | SearchResult[];
-		if (Array.isArray(parsed)) return { results: parsed };
-		return parsed;
+		return await runSearchInternal(searxngUrl, {
+			query: params.query,
+			maxResults: clampMaxResults(params.maxResults),
+			language: params.language,
+			categories: params.categories,
+			safesearch: params.safesearch,
+			timelimit: params.timelimit,
+		}, { signal, timeoutMs });
 	} catch (error: any) {
 		return { error: error?.message ?? String(error) };
 	}
@@ -275,48 +252,16 @@ async function runFetch(
 	signal?: AbortSignal,
 	timeoutMs?: number,
 ): Promise<FetchResponse> {
-	const uv = getUvBinary();
-	const raw = params.raw === true;
-	const download = params.download === true;
-	const effectiveTimeout = timeoutMs ?? (download ? 60_000 : 30_000);
-	const args = [
-		"run",
-		"--project",
-		EXTENSION_DIR,
-		"python",
-		FETCH_SCRIPT,
-		"--url",
-		params.url,
-	];
-	if (download) {
-		args.push("--download");
-	} else if (raw) {
-		args.push(
-			"--max-chars",
-			String(clampMaxChars(params.maxChars)),
-			"--raw",
-		);
-	} else {
-		args.push(
-			"--max-chars",
-			String(clampMaxChars(params.maxChars)),
-			"--format",
-			normalFetchedFormat(params.format ?? "markdown"),
-		);
-	}
-
+	// In-process call to the TS port (final cut, #0009). Previously this
+	// shelled out to `uv run --project . python scripts/fetch.py`.
 	try {
-		const result = await pi.exec(uv, args, { signal, timeout: effectiveTimeout, cwd: EXTENSION_DIR });
-		const output = result.stdout.trim();
-		if (!output) {
-			return {
-				error: result.stderr.trim() || `Fetch exited with code ${result.code}`,
-				url: params.url,
-			};
-		}
-
-		const parsed = JSON.parse(output) as FetchResponse;
-		return parsed;
+		return await fetchUrlInternal(params.url, {
+			maxChars: clampMaxChars(params.maxChars),
+			format: normalFetchedFormat(params.format ?? "markdown"),
+			raw: params.raw === true,
+			download: params.download === true,
+			timeout: Math.round((timeoutMs ?? (params.download ? 60_000 : 30_000)) / 1000),
+		}) as FetchResponse;
 	} catch (error: any) {
 		return {
 			error: error?.message ?? String(error),
@@ -604,13 +549,12 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			}
 
 			try {
-				const uv = getUvBinary();
-				await pi.exec(uv, [
-					"run", "--project", EXTENSION_DIR, "python", SEARCH_SCRIPT,
-					"--searxng-url", searxngUrl,
-					"--query", "health check",
-					"--max-results", "1",
-				], { timeout: 15_000, cwd: EXTENSION_DIR });
+				// In-process connectivity probe (final cut, #0009). Previously
+				// this shelled out to `uv run ... scripts/search.py`.
+				await runSearchInternal(searxngUrl, {
+					query: "health check",
+					maxResults: 1,
+				}, { timeoutMs: 15_000 });
 			} catch (error: any) {
 				ctx.ui.notify(
 					`web-search: SearXNG unreachable at ${searxngUrl}: ${error?.message ?? String(error)}`,
