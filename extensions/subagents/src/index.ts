@@ -422,16 +422,6 @@ ${outputText}`);
     },
   });
 
-  // Publish spawnSubagent on the shared event bus for other extensions to consume.
-  // Runtime defense: gracefully degrade when running under older hosts or narrow
-  // test mocks that do not expose the shared event bus.
-  const emit = (pi as ExtensionAPI & {
-    events?: { emit?: (event: string, ...args: unknown[]) => void };
-  }).events?.emit;
-  if (typeof emit === "function") {
-    emit("subagents:spawn:provide", spawnSubagent);
-  }
-
   // Warn on startup if legacy @tintinweb/pi-subagents is still in settings.json
   pi.on("session_start", async (_event, ctx) => {
     const settingsPath = join(ctx.cwd, "settings.json");

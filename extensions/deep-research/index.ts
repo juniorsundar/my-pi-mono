@@ -5,63 +5,14 @@ import { join } from "path";
 import { homedir } from "os";
 import { loadDeepresearchConfig, type DeepResearchConfig } from "./config.js";
 import { ResearchStateManager } from "./state-manager.js";
+import { spawnSubagent } from "../subagents/index.js";
+import type { SpawnSubagentResult } from "../subagents/index.js";
 
 const DEEP_RESEARCH_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents", "deep-research");
 const MAX_ITERATIONS = 10;
 // SUBAGENTS_DIR is resolved per-call from ctx.cwd in archiveLatestSubagentOutput
 
-// Structural type for spawnSubagent function (mirrors pi-subagents/src/spawner)
-// This eliminates the inter-package type dependency while preserving type safety
-type SpawnSubagentFunction = (options: {
-  agentType: string;
-  task: string;
-  agentsDir: string;
-  workDir?: string;
-  overrides?: {
-    model?: string;
-    thinking?: string;
-  };
-  piPath?: string;
-  generateId?: () => string;
-  onProgress?: (feed: {
-    collapsed: { text: string; hiddenCount: number; lines: unknown[] };
-    expanded: { text: string; hiddenCount: number; lines: unknown[] };
-  }) => void;
-  signal?: AbortSignal;
-}) => Promise<{
-  output: string;
-  agentId: string;
-  agentType: string;
-  duration: number;
-  model?: string;
-  usage?: {
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-  };
-  activityFeed?: unknown;
-}>;
-
-// Store spawnSubagent function from EventBus
-let spawnSubagent: SpawnSubagentFunction | undefined = undefined;
-
-// Reset spawnSubagent for testing (exported for test use)
-export function resetSpawnSubagentForTest(): void {
-  spawnSubagent = undefined;
-}
-
 export default function deepResearchExtension(pi: ExtensionAPI) {
-  // Listen for spawnSubagent to be provided by pi-subagents extension
-  pi.events.on("subagents:spawn:provide", (data: unknown) => {
-    spawnSubagent = data as SpawnSubagentFunction;
-  });
-
-  // Request a spawnSubagent from pi-subagents. This supports load-order safety:
-  // if pi-subagents loads after deep-research, it can respond to this request by
-  // re-emitting "subagents:spawn:provide". Idempotent — safe even if pi-subagents
-  // already loaded and provided a spawner.
-  pi.events.emit("subagents:spawn:request", { requester: "deep-research" });
   
   // ── Tools ──────────────────────────────────────────────────────────
 
@@ -87,20 +38,8 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const { agent_type, prompt } = params as { agent_type: string; prompt: string };
       const config = loadDeepresearchConfig().config;
-      
-      if (!spawnSubagent) {
-        const failedAgentId = `${agent_type}-failed-${Date.now().toString(36).slice(-6)}`;
-        return {
-          content: [{ type: "text", text: `[error] ${agent_type} subagent failed: No spawner registered on event bus` }],
-          details: {
-            agentType: agent_type,
-            agentId: failedAgentId,
-            error: "No spawner registered on event bus",
-          },
-        };
-      }
 
-      let result;
+      let result: SpawnSubagentResult;
       let wasRetried = false;
       try {
         result = await spawnSubagent({

@@ -10,33 +10,18 @@ vi.mock("./config", () => ({
   loadDeepresearchConfig: vi.fn(() => ({ config: {}, errors: [] })),
 }));
 
-// Mock EventBus for testing spawnSubagent injection
-const mockEventBusHandlers = new Map<string, Array<(data: unknown) => void>>();
-
-const mockEventBus = {
-  emit: vi.fn((channel: string, data: unknown) => {
-    // Invoke all handlers registered for this channel
-    const handlers = mockEventBusHandlers.get(channel);
-    if (handlers) {
-      handlers.forEach(handler => handler(data));
-    }
-  }),
-  on: vi.fn((channel: string, handler: (data: unknown) => void) => {
-    // Store handlers so tests can invoke them
-    if (!mockEventBusHandlers.has(channel)) {
-      mockEventBusHandlers.set(channel, []);
-    }
-    mockEventBusHandlers.get(channel)!.push(handler);
-    return () => {
-      // Unsubscribe function (not used in tests)
-    };
-  }),
-};
-
-// Helper to provide spawnSubagent to deep-research via EventBus
-function provideMockSpawnSubagent(spawnSubagent: any): void {
-  mockEventBus.emit("subagents:spawn:provide", spawnSubagent);
-}
+// Mock the subagents barrel: spawnSubagent is the direct import deep-research calls.
+// Tests control behavior via vi.mocked(spawnSubagent).mockResolvedValue / mockRejectedValue.
+// vi.hoisted makes the mock fn available to the hoisted vi.mock factory AND to tests.
+const { mockSpawnSubagent } = vi.hoisted(() => ({
+  mockSpawnSubagent: vi.fn(),
+}));
+vi.mock("../subagents/index.js", () => ({
+  default: vi.fn(),
+  resolveModel: vi.fn(),
+  formatCallHeader: vi.fn(),
+  spawnSubagent: mockSpawnSubagent,
+}));
 
 // typebox is not a direct project dependency — it comes from @earendil-works/pi-coding-agent.
 // Mock it so the module graph loads in test context. Proxy-based to handle any
@@ -55,7 +40,8 @@ vi.mock("typebox", () => {
 
 // ── Imports after mocks are set up ──────────────────────────────────
 
-import deepResearchExtension, { resetSpawnSubagentForTest } from "./index.js";
+import deepResearchExtension from "./index.js";
+import { spawnSubagent as mockedSpawnSubagent } from "../subagents/index.js";
 import { loadDeepresearchConfig } from "./config.js";
 import { ResearchStateManager } from "./state-manager.js";
 
@@ -77,7 +63,6 @@ function createMockPi() {
     appendEntry: vi.fn(() => "mock-anchor-id"),
     sendUserMessage: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn(),
-    events: mockEventBus,
   };
 }
 
@@ -140,6 +125,7 @@ describe("deep-research command handler", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    mockedSpawnSubagent.mockReset();
   });
 
   describe("Slice 1: Tracer bullet — empty args", () => {
@@ -703,7 +689,7 @@ describe("deep-research command handler", () => {
       const onUpdateMock = vi.fn();
 
       // Create mock spawnSubagent
-      const mockSpawnSubagent = vi.fn(async ({ onProgress }: any) => {
+      mockedSpawnSubagent.mockImplementation(async ({ onProgress }: any) => {
         onProgress?.({
           collapsed: { text: "searching the web...", hiddenCount: 0, lines: [] },
           expanded: { text: "searching the web...", hiddenCount: 0, lines: [] },
@@ -717,9 +703,6 @@ describe("deep-research command handler", () => {
           usage: {},
         };
       });
-
-      // Provide spawnSubagent via EventBus before calling execute
-      provideMockSpawnSubagent(mockSpawnSubagent);
 
       const ctx = createMockCtx();
 
@@ -750,7 +733,7 @@ describe("deep-research command handler", () => {
       const executeHandler = spawnToolRegistration.execute;
       const onUpdateMock = vi.fn();
 
-      const mockSpawnSubagent = vi.fn(async ({ onProgress }: any) => {
+      mockedSpawnSubagent.mockImplementation(async ({ onProgress }: any) => {
         onProgress?.({
           collapsed: { text: "analyzing gaps...", hiddenCount: 0, lines: [] },
           expanded: { text: "analyzing gaps...", hiddenCount: 0, lines: [] },
@@ -764,8 +747,6 @@ describe("deep-research command handler", () => {
           usage: {},
         };
       });
-
-      provideMockSpawnSubagent(mockSpawnSubagent);
 
       const ctx = createMockCtx();
 
@@ -922,9 +903,7 @@ describe("deep-research command handler", () => {
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
 
-      const mockSpawnSubagent = vi.fn();
-      mockSpawnSubagent.mockRejectedValue(new Error("Subagent timed out after 30s"));
-      provideMockSpawnSubagent(mockSpawnSubagent);
+      mockedSpawnSubagent.mockRejectedValue(new Error("Subagent timed out after 30s"));
 
       const ctx = createMockCtx();
 
@@ -948,8 +927,7 @@ describe("deep-research command handler", () => {
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
 
-      const mockSpawnSubagent = vi.fn();
-      mockSpawnSubagent.mockResolvedValue({
+      mockedSpawnSubagent.mockResolvedValue({
         output: "research result",
         agentId: "r-search-abc123",
         agentType: "r-search",
@@ -957,7 +935,6 @@ describe("deep-research command handler", () => {
         model: "test",
         usage: {},
       });
-      provideMockSpawnSubagent(mockSpawnSubagent);
 
       const ctx = createMockCtx();
 
@@ -973,20 +950,25 @@ describe("deep-research command handler", () => {
       expect(result.details?.agentType).toBe("r-search");
     });
 
-    it("returns structured error when no spawner is registered on event bus", async () => {
-      // Reset spawnSubagent to ensure no spawner is registered
-      resetSpawnSubagentForTest();
-      
-      // Create a fresh pi instance without providing any spawnSubagent
+    it("calls the directly-imported spawnSubagent without any event-bus registration", async () => {
+      // Direct import means spawnSubagent is always available — no provide step.
       const freshPi = createMockPi();
       deepResearchExtension(freshPi);
-      
+
       const spawnToolRegistration = freshPi.registerTool.mock.calls.find(
         (call: any) => call[0].name === "spawn_research_subagent",
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
 
-      // Don't provide any spawnSubagent - test the missing-spawner guard
+      mockedSpawnSubagent.mockResolvedValue({
+        output: "direct import works",
+        agentId: "r-search-direct",
+        agentType: "r-search",
+        duration: 1000,
+        model: "test",
+        usage: {},
+      });
+
       const ctx = createMockCtx();
 
       const result = await executeHandler(
@@ -997,32 +979,25 @@ describe("deep-research command handler", () => {
         ctx,
       );
 
-      expect(result.content[0].text).toContain("error");
-      expect(result.content[0].text).toContain("No spawner registered on event bus");
-      expect(result.details?.error).toBe("No spawner registered on event bus");
+      // No event-bus provide needed; the barrel import is called directly.
+      expect(mockedSpawnSubagent).toHaveBeenCalledTimes(1);
+      expect(result.content[0].text).toBe("direct import works");
       expect(result.details?.agentType).toBe("r-search");
-      expect(result.details?.agentId).toBeDefined();
+      expect(result.details?.agentId).toBe("r-search-direct");
     });
   });
 
-  describe("Slice 2: Load-order safety + missing-spawner guard", () => {
-    it("succeeds when pi-subagents loads after deep-research (request triggers provide)", async () => {
-      // Reset spawnSubagent to simulate clean state
-      resetSpawnSubagentForTest();
-      
-      // Create a fresh pi instance and initialize deep-research
+  describe("Slice 2: Direct import removes load-order coupling", () => {
+    it("spawns successfully via the barrel import without any event-bus request", async () => {
+      // Direct import: ES-module binding is established before any initializer
+      // runs, so load order no longer matters. No request is emitted.
       const freshPi = createMockPi();
       deepResearchExtension(freshPi);
-      
-      // Verify that deep-research emitted a request during initialization
-      expect(freshPi.events.emit).toHaveBeenCalledWith(
-        "subagents:spawn:request",
-        expect.objectContaining({ requester: "deep-research" }),
-      );
-      
-      // Now simulate pi-subagents loading after deep-research by providing spawnSubagent
-      const mockSpawnSubagent = vi.fn();
-      mockSpawnSubagent.mockResolvedValue({
+
+      // No subagents:spawn:request should ever be emitted.
+      expect((freshPi as any).events?.emit).toBeUndefined();
+
+      mockedSpawnSubagent.mockResolvedValue({
         output: "research result",
         agentId: "r-search-abc123",
         agentType: "r-search",
@@ -1030,16 +1005,12 @@ describe("deep-research command handler", () => {
         model: "test",
         usage: {},
       });
-      
-      // Provide spawnSubagent via EventBus (simulating pi-subagents responding to request)
-      freshPi.events.emit("subagents:spawn:provide", mockSpawnSubagent);
-      
-      // Get the execute handler and call it
+
       const spawnToolRegistration = freshPi.registerTool.mock.calls.find(
         (call: any) => call[0].name === "spawn_research_subagent",
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
-      
+
       const ctx = createMockCtx();
       const result = await executeHandler(
         "test-call-id",
@@ -1048,11 +1019,11 @@ describe("deep-research command handler", () => {
         undefined,
         ctx,
       );
-      
-      // Verify that the spawnSubagent was called successfully
+
+      // Verify that the imported spawnSubagent was called directly.
       expect(result.content[0].text).toBe("research result");
       expect(result.details?.agentType).toBe("r-search");
-      expect(mockSpawnSubagent).toHaveBeenCalledTimes(1);
+      expect(mockedSpawnSubagent).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1240,9 +1211,7 @@ describe("deep-research command handler", () => {
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
 
-      const mockSpawnSubagent = vi.fn();
-      // First call rejects, second resolves
-      mockSpawnSubagent
+      mockedSpawnSubagent
         .mockRejectedValueOnce(new Error("Timeout"))
         .mockResolvedValueOnce({
           output: "retry success",
@@ -1252,7 +1221,6 @@ describe("deep-research command handler", () => {
           model: "test",
           usage: {},
         });
-      provideMockSpawnSubagent(mockSpawnSubagent);
 
       const ctx = createMockCtx();
 
@@ -1265,7 +1233,7 @@ describe("deep-research command handler", () => {
       );
 
       expect(result.content[0].text).toBe("retry success");
-      expect(mockSpawnSubagent).toHaveBeenCalledTimes(2);
+      expect(mockedSpawnSubagent).toHaveBeenCalledTimes(2);
       // Retried flag should be propagated in success details
       expect(result.details?.retried).toBe(true);
     });
@@ -1276,12 +1244,9 @@ describe("deep-research command handler", () => {
       )?.[0];
       const executeHandler = spawnToolRegistration.execute;
 
-      const mockSpawnSubagent = vi.fn();
-      // Both calls reject
-      mockSpawnSubagent
+      mockedSpawnSubagent
         .mockRejectedValueOnce(new Error("Timeout"))
         .mockRejectedValueOnce(new Error("Timeout on retry"));
-      provideMockSpawnSubagent(mockSpawnSubagent);
 
       const ctx = createMockCtx();
 
@@ -1300,7 +1265,7 @@ describe("deep-research command handler", () => {
       expect(result.details?.agentId).toBeDefined();
       expect(typeof result.details?.agentId).toBe("string");
       expect(result.details?.agentId).toContain("r-search");
-      expect(mockSpawnSubagent).toHaveBeenCalledTimes(2);
+      expect(mockedSpawnSubagent).toHaveBeenCalledTimes(2);
     });
 
     it("records retry success in state.md when retry succeeds", async () => {
