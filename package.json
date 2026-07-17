@@ -5,7 +5,9 @@
   "description": "Local monorepo package for pi coding-agent extensions",
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
   "scripts": {
     "test": "vitest run",
@@ -13,6 +15,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "ipaddr.js": "^2.4.0",
+    "linkedom": "^0.18.13",
+    "turndown": "^7.2.4",
+    "undici": "^8.7.0",
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
@@ -26,6 +33,8 @@
     "@earendil-works/pi-coding-agent": "^0.80.0",
     "@earendil-works/pi-tui": "^0.80.0",
     "@types/node": "^22.0.0",
+    "@types/turndown": "^5.0.6",
+    "msw": "^2.15.0",
     "typebox": "*",
     "typescript": "^5.0.0",
     "vitest": "^3.1.1"
