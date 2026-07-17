@@ -1,0 +1,36 @@
+<html>
+<head><title>Usage with Python — trafilatura 2.1.0 documentation</title></head>
+<body>
+<nav>Read the Docs sidebar</nav>
+<article class="body" role="main">
+  <h1>With Python</h1>
+  <p>Trafilatura can be used from the command-line or as a Python library.</p>
+
+  <h2>The Python programming language<a class="headerlink" href="#the-python-programming-language" title="Link to this heading">¶</a></h2>
+  <p>Trafilatura requires Python 3.10 or later.</p>
+
+  <h2>Step-by-step<a class="headerlink" href="#step-by-step" title="Link to this heading">¶</a></h2>
+
+  <h3>Quickstart<a class="headerlink" href="#quickstart" title="Link to this heading">¶</a></h3>
+  <pre><code class="language-python">import trafilatura
+downloaded = trafilatura.fetch_url('https://example.com')
+print(trafilatura.extract(downloaded))</code></pre>
+
+  <h3>Extraction functions<a class="headerlink" href="#extraction-functions" title="Link to this heading">¶</a></h3>
+  <p>The main function is <code class="xref py py-func docutils literal notranslate"><span class="pre">extract()</span></code>.</p>
+
+  <h3>Output<a class="headerlink" href="#output" title="Link to this heading">¶</a></h3>
+  <p>Output can be plain text, JSON, XML, or Markdown.</p>
+
+  <h4>Examples<a class="headerlink" href="#examples" title="Link to this heading">¶</a></h4>
+  <pre><code class="language-python"># some formatting preserved in basic XML structure
+result = trafilatura.extract(downloaded, output_format='xml')</code></pre>
+
+  <h2>Extraction settings<a class="headerlink" href="#extraction-settings" title="Link to this heading">¶</a></h2>
+  <p>Settings control extraction behavior.</p>
+
+  <h3>Function parameters<a class="headerlink" href="#function-parameters" title="Link to this heading">¶</a></h3>
+  <p>The <code class="xref py py-func docutils literal notranslate"><span class="pre">extract()</span></code> function accepts many parameters.</p>
+</article>
+</body>
+</html>

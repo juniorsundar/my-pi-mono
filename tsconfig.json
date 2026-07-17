@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "@earendil-works/*": [
+        "node_modules/@earendil-works/*"
+      ],
+      "typebox": [
+        "node_modules/typebox"
+      ]
+    },
+    "baseUrl": ".",
+    "strictNullChecks": true
+  },
+  "include": [
+    "extensions/**/*.ts"
+  ],
+  "exclude": [
+    "extensions/**/*.test.ts"
+  ]
+}
