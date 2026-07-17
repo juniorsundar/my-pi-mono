@@ -6,6 +6,8 @@ import * as path from "node:path";
 import {
 	search as runSearchInternal,
 	fetchUrl as fetchUrlInternal,
+	writeContentArtifact,
+	type OutputFormat,
 } from "./src/index.js";
 
 interface SearchResult {
@@ -230,6 +232,20 @@ function formatResults(response: SearchResponse): string {
 // Fetch helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Inline preview threshold for fetched content.
+ *
+ * Downstream layers (pi core tool-result handling / provider proxies) cap
+ * tool-result text well below our own 30,000-char limit — observed at
+ * ~2000 chars, cut mid-word with a `[truncated]` marker. To stay safely
+ * under that cap regardless of where it lives, content longer than this is
+ * never inlined into the tool result. Instead we write the full content to
+ * a temp artifact and emit a short preview + path, letting the agent page
+ * through the rest with the read tool (which chunks at 2000 lines / 50KB
+ * and is not subject to the tool-result cap).
+ */
+const INLINE_PREVIEW_CHARS = 1500;
+
 function clampMaxChars(value: number | undefined): number {
 	if (!Number.isFinite(value)) return 30_000;
 	return Math.max(1_000, Math.min(100_000, Math.trunc(value ?? 30_000)));
@@ -331,9 +347,33 @@ function formatFetchResult(response: FetchResponse, prompt?: string): string {
 	}
 
 	if (response.content) {
-		parts.push("");
-		parts.push("## Content");
-		parts.push(response.content);
+		const content = response.content;
+		// Always write large content to a temp artifact and emit only a short
+		// preview inline. This keeps the tool result under the downstream
+		// tool-result cap (~2000 chars) regardless of where it is enforced.
+		// The agent pages through the full content via the read tool.
+		if (content.length > INLINE_PREVIEW_CHARS) {
+			const outputFormat: OutputFormat = response.format === "text" ? "text" : "markdown";
+			let artifactPath = response.contentArtifactPath ?? "";
+			if (!artifactPath) {
+				try {
+					artifactPath = writeContentArtifact(content, outputFormat);
+				} catch {
+					artifactPath = "";
+				}
+			}
+			parts.push("");
+			parts.push("## Preview");
+			parts.push(content.slice(0, INLINE_PREVIEW_CHARS));
+			parts.push(`\n[... preview truncated at ${INLINE_PREVIEW_CHARS} chars; full content is ${content.length} chars.]`);
+			if (artifactPath) {
+				parts.push(`**Full content:** \`${artifactPath}\` (use the read tool to inspect; pass offset/limit to page through).`);
+			}
+		} else {
+			parts.push("");
+			parts.push("## Content");
+			parts.push(content);
+		}
 	}
 
 	return parts.join("\n");

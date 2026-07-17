@@ -460,7 +460,7 @@ export function truncate(text: string, maxChars: number): [string, boolean] {
 // Content artifact
 // ---------------------------------------------------------------------------
 
-function writeContentArtifact(fullContent: string, outputFormat: OutputFormat): string {
+export function writeContentArtifact(fullContent: string, outputFormat: OutputFormat): string {
 	const suffix = outputFormat === "markdown" ? ".md" : ".txt";
 	const prefix = "pi-web-fetch-";
 	// mkstemp equivalent: unique temp path with the right suffix.

@@ -77,6 +77,7 @@ export {
 	decodeBody,
 	normalizeWhitespace,
 	truncate,
+	writeContentArtifact,
 	type PipelineResult,
 	type ProcessOptions,
 	type OutputFormat,
