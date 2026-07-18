@@ -31,6 +31,7 @@ function makePi() {
         handlers[eventName] ??= [];
         handlers[eventName]!.push(handler);
       },
+      appendEntry: () => undefined,
       sendMessage: (message: unknown) => messages.push(message),
     } as any,
     handlers,

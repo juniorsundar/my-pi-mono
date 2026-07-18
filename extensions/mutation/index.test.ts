@@ -58,19 +58,33 @@ function makePi() {
   const entries: any[] = [];
   const tools: any[] = [];
   const commands: Array<{ name: string; definition: any }> = [];
+  const messageRenderers = new Map<string, Function>();
+  const entryRenderers = new Map<string, Function>();
   const pi = {
     on: (eventName: string, handler: Function) => {
       handlers[eventName] ??= [];
       handlers[eventName]!.push(handler);
     },
     registerTool: (tool: any) => tools.push(tool),
-    registerMessageRenderer: () => undefined,
+    registerMessageRenderer: (customType: string, renderer: Function) =>
+      messageRenderers.set(customType, renderer),
+    registerEntryRenderer: (customType: string, renderer: Function) =>
+      entryRenderers.set(customType, renderer),
     registerCommand: (name: string, definition: any) => commands.push({ name, definition }),
     registerShortcut: () => undefined,
     appendEntry: (customType: string, data: unknown) => entries.push({ customType, data }),
     sendMessage: (message: unknown) => messages.push(message),
   };
-  return { pi: pi as any, handlers, messages, entries, tools, commands };
+  return {
+    pi: pi as any,
+    handlers,
+    messages,
+    entries,
+    tools,
+    commands,
+    messageRenderers,
+    entryRenderers,
+  };
 }
 
 function makeTheme() {
@@ -178,7 +192,7 @@ describe("mutation tool_call approval wiring", () => {
 
   it("approves bash through the canonical mutation package", async () => {
     setCurrentProfile("ask");
-    const { pi, handlers, messages } = makePi();
+    const { pi, handlers, messages, entries, entryRenderers } = makePi();
     mutationExtension(pi);
 
     const result = await handlers.tool_call![2]!(
@@ -195,8 +209,24 @@ describe("mutation tool_call approval wiring", () => {
 
     expect(result).toBeUndefined();
     expect(
-      messages.some((m: any) => m.customType === "mutation-verdict" && m.details?.verdict === "approved" && m.details?.target === "npm test"),
+      messages.some(
+        (m: any) =>
+          m.customType === "mutation-verdict" &&
+          m.content === "User approved the bash tool call: npm test" &&
+          m.details?.verdict === "approved" &&
+          m.details?.target === "npm test",
+      ),
     ).toBe(true);
+    expect(entries).toContainEqual({
+      customType: "mutation-verdict-display",
+      data: { verdict: "approved", toolName: "bash", target: "npm test" },
+    });
+    const rendered = entryRenderers.get("mutation-verdict-display")!(
+      { data: entries[0]!.data },
+      {},
+      makeTheme(),
+    );
+    expect(collectText(rendered)).toContain("✓ approved — npm test");
   });
 
   it("denies bash through the canonical mutation package", async () => {
@@ -218,7 +248,13 @@ describe("mutation tool_call approval wiring", () => {
 
     expect(result).toMatchObject({ block: true, reason: "Blocked by user" });
     expect(
-      messages.some((m: any) => m.customType === "mutation-verdict" && m.details?.verdict === "denied" && m.details?.target === "npm test"),
+      messages.some(
+        (m: any) =>
+          m.customType === "mutation-verdict" &&
+          m.content === "User denied the bash tool call: npm test" &&
+          m.details?.verdict === "denied" &&
+          m.details?.target === "npm test",
+      ),
     ).toBe(true);
   });
 
