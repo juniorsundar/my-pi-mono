@@ -2,6 +2,29 @@
 
 This context describes the project language for pi agent extensions and workflows.
 
+## Mutation Diff Rendering
+
+The `edit` and `write` tools use a two-state inline rendering lifecycle. Argument streaming may update the partial target path, but it must not progressively generate or reveal diff lines.
+
+### Language
+
+**Pending Summary**:
+The single-line inline state shown for an `edit` or `write` call while its arguments are incomplete. It displays the tool name, any currently available partial path, and `preparing diff…`. Its height remains stable, and rendering it performs no file reads, edit validation, or diff generation.
+_Avoid_: Streaming diff, loading card, partial preview
+
+**Approval Card**:
+The existing compact inline mutation preview shown once an `edit` or `write` call's arguments are complete. Depending on the completed input, it contains the compact diff or the existing binary, unreadable-file, validation, or generation-error outcome. The name describes the component style; the card is rendered for all `edit` and `write` calls, including calls whose policy does not open an approval prompt.
+_Avoid_: Full diff (the card may truncate hunks), approval prompt (the prompt is a separate UI interaction)
+
+**Atomic Reveal**:
+The single transition from Pending Summary to Approval Card at Pi's `argsComplete` boundary. The Approval Card's contents are prepared and presented as one render rather than accumulated as arguments stream.
+_Avoid_: Buffered streaming (no preview work occurs during the pending phase)
+
+### Flagged ambiguities
+
+- **Approval Card vs approval prompt**: The Approval Card is a read-only inline transcript component. The approve/deny/Neovim/expanded-view selector is a separate interaction with an independent lifecycle.
+- **Atomic Reveal vs immutable row**: The Pending Summary's partial path may grow as arguments stream. The guarantee is stable one-line height and no preview work, not that every character remains unchanged.
+
 ## Subagents
 
 Delegates bounded work from the main pi agent to disposable child agents (scout, worker, planner, etc.). Each subagent is a fresh `pi` process with its own system prompt, tool set, model, and timeout.

@@ -327,6 +327,164 @@ describe("mutation tool_call approval wiring", () => {
     }
   });
 
+  it("renders a one-line Pending Summary while edit/write arguments are incomplete", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "# Project\nold second line\n\nBody\n", "utf8");
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+
+      const editTool = tools.find((tool) => tool.name === "edit");
+      const args = {
+        path: "target.txt",
+        edits: [{ oldText: "old second line", newText: "new second line" }],
+      };
+      const context = { cwd, state: {}, executionStarted: false, argsComplete: false };
+
+      const rendered = editTool.renderCall(args, makeTheme(), context);
+      const text = collectText(rendered);
+
+      expect(text).toContain("edit");
+      expect(text).toContain("target.txt");
+      expect(text).toContain("preparing diff");
+      expect(text.split("\n").length).toBe(1);
+      expect(text).not.toContain("+1");
+      expect(text).not.toContain("Unable to safely preview");
+      expect(text).not.toContain("text diff preview");
+      expect(text).not.toContain("Failed to render mutation preview");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically reveals the full Approval Card when argsComplete becomes true", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "# Project\nold second line\n\nBody\n", "utf8");
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+
+      const editTool = tools.find((tool) => tool.name === "edit");
+      const args = {
+        path: "target.txt",
+        edits: [{ oldText: "old second line", newText: "new second line" }],
+      };
+      const pendingCtx = { cwd, state: {}, executionStarted: false, argsComplete: false };
+      const completeCtx = { cwd, state: {}, executionStarted: false, argsComplete: true };
+
+      const pending = editTool.renderCall(args, makeTheme(), pendingCtx);
+      expect(collectText(pending)).toContain("preparing diff");
+      expect(collectText(pending).split("\n").length).toBe(1);
+
+      const revealed = editTool.renderCall(args, makeTheme(), completeCtx);
+      const text = collectText(revealed);
+      expect(text).toContain("new second line");
+      expect(text).toContain("+1");
+      expect(text).toContain("-1");
+      expect(text).not.toContain("preparing diff");
+      expect(text).not.toContain("Unable to safely preview");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the Pending Summary one line high as the partial path grows", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "# Project\nold second line\n\nBody\n", "utf8");
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+
+      const editTool = tools.find((tool) => tool.name === "edit");
+
+      const shortPath = editTool.renderCall(
+        { path: "target.txt", edits: [{ oldText: "line", newText: "changed" }] },
+        makeTheme(),
+        { cwd, state: {}, executionStarted: false, argsComplete: false },
+      );
+      expect(collectText(shortPath).split("\n").length).toBe(1);
+
+      const mediumPath = editTool.renderCall(
+        { path: "subdir/target.txt", edits: [{ oldText: "line", newText: "changed" }] },
+        makeTheme(),
+        { cwd, state: {}, executionStarted: false, argsComplete: false },
+      );
+      expect(collectText(mediumPath).split("\n").length).toBe(1);
+
+      const deepPath = editTool.renderCall(
+        { path: "a/deep/subdir/target.txt", edits: [{ oldText: "line", newText: "changed" }] },
+        makeTheme(),
+        { cwd, state: {}, executionStarted: false, argsComplete: false },
+      );
+      expect(collectText(deepPath).split("\n").length).toBe(1);
+      expect(collectText(deepPath)).toContain("a/deep/subdir/target.txt");
+      expect(collectText(deepPath)).not.toContain("-1");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically reveals binary warning card when argsComplete and target is binary", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "binary.bin");
+      writeFileSync(filePath, Buffer.from([0x00, 0x01, 0x02, 0xff]));
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+
+      const writeTool = tools.find((tool) => tool.name === "write");
+      const args = { path: "binary.bin", content: "new content\n" };
+
+      const pendingCtx = { cwd, state: {}, executionStarted: false, argsComplete: false };
+      const completeCtx = { cwd, state: {}, executionStarted: false, argsComplete: true };
+
+      const pending = writeTool.renderCall(args, makeTheme(), pendingCtx);
+      expect(collectText(pending).split("\n").length).toBe(1);
+      expect(collectText(pending)).toContain("preparing diff");
+
+      const revealed = writeTool.renderCall(args, makeTheme(), completeCtx);
+      const text = collectText(revealed);
+      expect(text).toContain("Text diff preview unavailable");
+      expect(text).not.toContain("preparing diff");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically reveals validation error card when argsComplete and edit is invalid", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "# Project\nold second line\n\nBody\n", "utf8");
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+
+      const editTool = tools.find((tool) => tool.name === "edit");
+      // Edit where oldText doesn't match the file content
+      const args = {
+        path: "target.txt",
+        edits: [{ oldText: "this text does not exist in the file", newText: "replacement" }],
+      };
+
+      const pendingCtx = { cwd, state: {}, executionStarted: false, argsComplete: false };
+      const completeCtx = { cwd, state: {}, executionStarted: false, argsComplete: true };
+
+      const pending = editTool.renderCall(args, makeTheme(), pendingCtx);
+      expect(collectText(pending).split("\n").length).toBe(1);
+      expect(collectText(pending)).toContain("preparing diff");
+
+      const revealed = editTool.renderCall(args, makeTheme(), completeCtx);
+      const text = collectText(revealed);
+      expect(text).toContain("Unable to safely preview");
+      expect(text).not.toContain("preparing diff");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("keeps edit renderCall preview stable after execution mutates the file", () => {
     const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
     try {
@@ -340,7 +498,7 @@ describe("mutation tool_call approval wiring", () => {
         path: "target.txt",
         edits: [{ oldText: "old second line", newText: "new second line" }],
       };
-      const context = { cwd, state: {}, executionStarted: false };
+      const context = { cwd, state: {}, executionStarted: false, argsComplete: true };
 
       const before = editTool.renderCall(args, makeTheme(), context);
       expect(collectText(before)).toContain("new second line");

@@ -370,11 +370,22 @@ function renderMutationApprovalCard(
   toolName: "edit" | "write",
   args: unknown,
   theme: any,
-  context: { cwd: string; state?: Record<string, unknown>; executionStarted?: boolean },
+  context: { cwd: string; state?: Record<string, unknown>; executionStarted?: boolean; argsComplete?: boolean },
 ): Box {
   const input = isRecord(args) ? args : {};
   const cwd = context.cwd;
   const targetPath = getPath(input);
+
+  // While arguments are incomplete, show a stable one-line Pending Summary.
+  // No file reads, validation, or diff generation during this phase.
+  if (context.argsComplete === false) {
+    const summary =
+      theme.fg("accent", "✎ ") +
+      theme.fg("toolTitle", `${toolName}  ${targetPath}`) +
+      theme.fg("dim", " · preparing diff…");
+    return renderApprovalBox([summary], theme);
+  }
+
   const title = `Pi Approval | ${toolName} | ${targetPath}`;
   const cacheKey = `${toolName}:${cwd}:${stableStringify(input)}`;
   const state = context.state ?? {};
