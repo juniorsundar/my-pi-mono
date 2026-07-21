@@ -12,6 +12,128 @@ import { homedir } from "os";
 const DEFAULT_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents");
 const modelContextWindowCache = new Map<string, number | undefined>();
 
+type CommandToken = {
+  value: string;
+  start: number;
+  end: number;
+  quoted: boolean;
+};
+
+type ParsedSubagentCommand = {
+  agentType: string;
+  prompt: string;
+  model?: string;
+  thinking?: string;
+};
+
+/** Tokenize command arguments while retaining source spans and quote intent. */
+function tokenizeCommandArgs(input: string): CommandToken[] {
+  const tokens: CommandToken[] = [];
+  let index = 0;
+
+  while (index < input.length) {
+    while (/\s/.test(input[index] ?? "")) index++;
+    if (index >= input.length) break;
+
+    const start = index;
+    let value = "";
+    let quote: "'" | '"' | undefined;
+    let quoted = false;
+
+    while (index < input.length) {
+      const char = input[index];
+      if (quote) {
+        if (char === quote) {
+          quote = undefined;
+          quoted = true;
+          index++;
+        } else if (char === "\\" && quote === '"' && index + 1 < input.length) {
+          value += input[index + 1];
+          index += 2;
+        } else {
+          value += char;
+          index++;
+        }
+      } else if (char === "'" || char === '"') {
+        quote = char;
+        quoted = true;
+        index++;
+      } else if (char === "\\" && index + 1 < input.length) {
+        value += input[index + 1];
+        index += 2;
+      } else if (/\s/.test(char)) {
+        break;
+      } else {
+        value += char;
+        index++;
+      }
+    }
+
+    if (quote) throw new Error("Unterminated quote in /subagent arguments");
+    tokens.push({ value, start, end: index, quoted });
+  }
+
+  return tokens;
+}
+
+/** Parse /subagent arguments, preserving prompt spacing and quoted literals. */
+function parseSubagentCommand(input: string): ParsedSubagentCommand | undefined {
+  const tokens = tokenizeCommandArgs(input);
+  if (tokens.length < 2 || !tokens[0].value) return undefined;
+
+  const excluded = new Set<number>([0]);
+  let model: string | undefined;
+  let thinking: string | undefined;
+  let optionsEnded = false;
+
+  for (let index = 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (!optionsEnded && !token.quoted && token.value === "--") {
+      excluded.add(index);
+      optionsEnded = true;
+      continue;
+    }
+    if (optionsEnded || token.quoted) continue;
+
+    const option = token.value === "--model"
+      ? "model"
+      : token.value === "--thinking"
+        ? "thinking"
+        : undefined;
+    if (!option) continue;
+
+    const valueToken = tokens[index + 1];
+    if (!valueToken) throw new Error(`Missing value for ${token.value}`);
+    excluded.add(index);
+    excluded.add(index + 1);
+    if (option === "model") model = valueToken.value;
+    else thinking = valueToken.value;
+    index++;
+  }
+
+  const promptIndexes = tokens
+    .map((_token, index) => index)
+    .filter((index) => !excluded.has(index));
+  if (promptIndexes.length === 0) return undefined;
+
+  let prompt = tokens[promptIndexes[0]].value;
+  for (let position = 1; position < promptIndexes.length; position++) {
+    const previousIndex = promptIndexes[position - 1];
+    const currentIndex = promptIndexes[position];
+    const separator = currentIndex === previousIndex + 1
+      ? input.slice(tokens[previousIndex].end, tokens[currentIndex].start)
+      : " ";
+    prompt += separator + tokens[currentIndex].value;
+  }
+
+  return {
+    agentType: tokens[0].value,
+    prompt,
+    ...(model !== undefined ? { model } : {}),
+    ...(thinking !== undefined ? { thinking } : {}),
+  };
+}
+
 export interface SubagentEntryPointOptions {
   agentsDir?: string;
 }
@@ -445,5 +567,94 @@ ${outputText}`);
     } catch {
       // Settings file unreadable or invalid JSON — silently skip
     }
+  });
+
+  // User-facing slash command — drives the main agent to call the `subagent`
+  // tool itself (mirroring /deep-research), so the existing tool-row renderer
+  // shows live turns/tool calls — the same rich UI the agent gets when it
+  // spawns a subagent directly. Reference counts scope the guardrail to each
+  // session and keep it active until all overlapping driven turns finish.
+  const drivenTurnsBySession = new Map<string, number>();
+  pi.on("tool_call", (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    if ((drivenTurnsBySession.get(sessionId) ?? 0) > 0 && event.toolName !== "subagent") {
+      return {
+        block: true,
+        reason:
+          "/subagent is driving this turn — only the subagent tool is allowed",
+      };
+    }
+    return undefined;
+  });
+
+  pi.registerCommand("subagent", {
+    description:
+      "Spawn a subagent: /subagent <agent_type> <prompt> [--model NAME] [--thinking LEVEL]",
+    handler: async (args, ctx) => {
+      const trimmed = (args ?? "").trim();
+      if (!trimmed) {
+        ctx.ui.notify(
+          "Usage: /subagent <agent_type> <prompt> [--model NAME] [--thinking LEVEL]",
+          "warning",
+        );
+        const agents = listAvailableAgents(agentsDir);
+        if (agents.length > 0) {
+          ctx.ui.notify(
+            `Available agent types: ${agents.join(", ")}`,
+            "info",
+          );
+        }
+        return;
+      }
+
+      let parsed: ParsedSubagentCommand | undefined;
+      try {
+        parsed = parseSubagentCommand(trimmed);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(message, "error");
+        return;
+      }
+
+      if (!parsed?.prompt) {
+        ctx.ui.notify(
+          "Usage: /subagent <agent_type> <prompt> [--model NAME] [--thinking LEVEL]",
+          "warning",
+        );
+        return;
+      }
+
+      const { agentType, prompt, model, thinking } = parsed;
+
+      // Drive the main agent to call the `subagent` tool itself, so the
+      // existing tool-row renderer shows live turns/tool calls (the same rich
+      // UI the agent gets when it spawns a subagent directly). Mirrors the
+      // /deep-research command pattern: sendUserMessage + waitForIdle.
+      ctx.ui.notify(`Spawning subagent: ${agentType}`, "info");
+      const overridesClause =
+        (model !== undefined ? `, model=${JSON.stringify(model)}` : "") +
+        (thinking !== undefined ? `, thinking=${JSON.stringify(thinking)}` : "");
+      const instruction =
+        `Call the \`subagent\` tool now with exactly these params and nothing else: ` +
+        `agent_type=${JSON.stringify(agentType)}, prompt=${JSON.stringify(prompt)}` +
+        overridesClause +
+        `. Do not add commentary or call any other tool.`;
+      const sessionId = ctx.sessionManager.getSessionId();
+      drivenTurnsBySession.set(
+        sessionId,
+        (drivenTurnsBySession.get(sessionId) ?? 0) + 1,
+      );
+      try {
+        await pi.sendUserMessage(instruction, { deliverAs: "followUp" });
+        await ctx.waitForIdle();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`Subagent failed: ${message}`, "error");
+      } finally {
+        const remaining = (drivenTurnsBySession.get(sessionId) ?? 1) - 1;
+        if (remaining > 0) drivenTurnsBySession.set(sessionId, remaining);
+        else drivenTurnsBySession.delete(sessionId);
+      }
+    },
   });
 }

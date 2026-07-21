@@ -97,11 +97,17 @@ function writeAgentDef(
 
 function mockExtensionAPI(): {
   registerTool: ReturnType<typeof vi.fn>;
+  registerCommand: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
+  sendMessage: ReturnType<typeof vi.fn>;
+  sendUserMessage: ReturnType<typeof vi.fn>;
 } {
   return {
     registerTool: vi.fn(),
+    registerCommand: vi.fn(),
     on: vi.fn(),
+    sendMessage: vi.fn(),
+    sendUserMessage: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -2512,5 +2518,330 @@ describe("formatCallHeader", () => {
     const result = formatCallHeader("scout", undefined, true, themeStub());
     const lines = result.split("\n");
     expect(lines[1]).toBe("FG(running...)");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// /subagent slash command — agent-driven dispatch (rich tool-row UI)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Seam: the registerCommand("subagent") handler, extracted via
+// pi.registerCommand.mock.calls.find(c => c[0] === "subagent")[1].handler.
+// The command now drives the main agent to call the `subagent` tool itself
+// (mirroring /deep-research), so the existing tool-row renderer shows live
+// turns/tool calls. A tool_call guardrail blocks non-subagent tools during a
+// driven turn.
+
+function commandCtx(overrides: Record<string, unknown> = {}) {
+  return {
+    ui: { notify: vi.fn() },
+    cwd: "/tmp/subagent-cmd-cwd",
+    signal: undefined as AbortSignal | undefined,
+    sessionManager: { getSessionId: vi.fn(() => "session-1") },
+    waitForIdle: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as any;
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function getCommandHandler(pi: ReturnType<typeof mockExtensionAPI>) {
+  const call = pi.registerCommand.mock.calls.find((c) => c[0] === "subagent");
+  if (!call) throw new Error("subagent command was not registered");
+  return call[1].handler as (args: string, ctx: any) => Promise<void>;
+}
+
+function getToolCallHandler(pi: ReturnType<typeof mockExtensionAPI>) {
+  const call = pi.on.mock.calls.find((c) => c[0] === "tool_call");
+  if (!call) throw new Error("tool_call handler was not registered");
+  return call[1] as (event: any, ctx: any) => unknown;
+}
+
+describe("/subagent command — agent-driven dispatch", () => {
+  it("shows a usage warning and does not spawn when args are empty", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler("", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Usage: /subagent"),
+      "warning",
+    );
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(ctx.waitForIdle).not.toHaveBeenCalled();
+  });
+
+  it("drives the agent: sends an imperative user message and waits for idle", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler("scout find the main entry point", ctx);
+
+    expect(pi.sendUserMessage).toHaveBeenCalledTimes(1);
+    const [content, opts] = pi.sendUserMessage.mock.calls[0];
+    expect(typeof content).toBe("string");
+    // Imperative instruction to call the subagent tool with exact params
+    expect(content).toContain("subagent");
+    expect(content).toContain("scout");
+    expect(content).toContain("find the main entry point");
+    expect(opts).toEqual({ deliverAs: "followUp" });
+    expect(ctx.waitForIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves exact quoted values and meaningful prompt whitespace", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler(
+      'worker refactor  "the auth module" --model "claude sonnet" --thinking high',
+      ctx,
+    );
+
+    expect(pi.sendUserMessage).toHaveBeenCalledWith(
+      "Call the `subagent` tool now with exactly these params and nothing else: " +
+        'agent_type="worker", prompt="refactor  the auth module", ' +
+        'model="claude sonnet", thinking="high". ' +
+        "Do not add commentary or call any other tool.",
+      { deliverAs: "followUp" },
+    );
+  });
+
+  it("keeps quoted flags and tokens after -- as literal prompt text", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler('scout explain "--model" behavior -- --thinking carefully', ctx);
+
+    const [content] = pi.sendUserMessage.mock.calls[0];
+    expect(content).toContain(
+      'agent_type="scout", prompt="explain --model behavior --thinking carefully"',
+    );
+    expect(content).not.toContain(', thinking="carefully"');
+  });
+
+  it("preserves leading and trailing spaces inside a quoted prompt", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler('worker "  keep edge spaces  "', ctx);
+
+    expect(pi.sendUserMessage.mock.calls[0][0]).toContain(
+      'prompt="  keep edge spaces  "',
+    );
+  });
+
+  it("preserves explicitly empty model and thinking override values", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler('worker task --model "" --thinking ""', ctx);
+
+    expect(pi.sendUserMessage.mock.calls[0][0]).toContain(
+      'prompt="task", model="", thinking=""',
+    );
+  });
+
+  it("shows a usage warning when agent type is present but prompt is empty", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler("scout", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Usage: /subagent"),
+      "warning",
+    );
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['scout "unterminated', "Unterminated quote in /subagent arguments"],
+    ["scout task --model", "Missing value for --model"],
+    ["scout task --thinking", "Missing value for --thinking"],
+  ])("reports malformed arguments without starting a turn: %s", async (args, message) => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const ctx = commandCtx();
+
+    await handler(args, ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(message, "error");
+    expect(pi.sendUserMessage).not.toHaveBeenCalled();
+    expect(ctx.waitForIdle).not.toHaveBeenCalled();
+  });
+});
+
+describe("/subagent command — tool_call guardrail", () => {
+  it("blocks a non-subagent tool call during a driven turn", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const toolCallHandler = getToolCallHandler(pi);
+    const ctx = commandCtx();
+
+    // Start a driven turn (sets the guardrail flag) but do not await, so the
+    // flag is live while we invoke the guardrail synchronously.
+    const pending = handler("scout look around", ctx);
+
+    // The guardrail should be active now: a non-subagent tool is blocked.
+    const result = toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-1", toolName: "bash", input: {} },
+      ctx,
+    );
+    expect(result).toEqual({ block: true, reason: expect.any(String) });
+
+    // Let the driven turn finish (sendUserMessage resolves, waitForIdle resolves).
+    await pending;
+
+    // After the turn completes, the guardrail is inactive again.
+    const resultAfter = toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-2", toolName: "bash", input: {} },
+      ctx,
+    );
+    expect(resultAfter).toBeUndefined();
+  });
+
+  it("allows the subagent tool call during a driven turn", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const toolCallHandler = getToolCallHandler(pi);
+    const ctx = commandCtx();
+
+    const pending = handler("scout look around", ctx);
+
+    const result = toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-1", toolName: "subagent", input: {} },
+      ctx,
+    );
+    expect(result).toBeUndefined();
+
+    await pending;
+  });
+
+  it("keeps the guardrail active until all overlapping commands in a session finish", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const toolCallHandler = getToolCallHandler(pi);
+    const firstIdle = deferred();
+    const secondIdle = deferred();
+    const firstCtx = commandCtx({ waitForIdle: vi.fn(() => firstIdle.promise) });
+    const secondCtx = commandCtx({ waitForIdle: vi.fn(() => secondIdle.promise) });
+
+    const first = handler("scout first task", firstCtx);
+    const second = handler("worker second task", secondCtx);
+
+    firstIdle.resolve();
+    await first;
+    expect(toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-3", toolName: "bash", input: {} },
+      secondCtx,
+    )).toEqual({ block: true, reason: expect.any(String) });
+
+    secondIdle.resolve();
+    await second;
+    expect(toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-4", toolName: "bash", input: {} },
+      secondCtx,
+    )).toBeUndefined();
+  });
+
+  it("does not apply one session's guardrail to another session", async () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const toolCallHandler = getToolCallHandler(pi);
+    const idle = deferred();
+    const sessionA = commandCtx({
+      sessionManager: { getSessionId: vi.fn(() => "session-a") },
+      waitForIdle: vi.fn(() => idle.promise),
+    });
+    const sessionB = commandCtx({
+      sessionManager: { getSessionId: vi.fn(() => "session-b") },
+    });
+
+    const pending = handler("scout guarded task", sessionA);
+    expect(toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-5", toolName: "bash", input: {} },
+      sessionB,
+    )).toBeUndefined();
+
+    idle.resolve();
+    await pending;
+  });
+
+  it("does not share guardrail state between extension instances", async () => {
+    const firstPi = mockExtensionAPI();
+    const secondPi = mockExtensionAPI();
+    subagentEntryPoint(firstPi as any, { agentsDir: makeAgentsDir() });
+    subagentEntryPoint(secondPi as any, { agentsDir: makeAgentsDir() });
+    const firstHandler = getCommandHandler(firstPi);
+    const secondToolCallHandler = getToolCallHandler(secondPi);
+    const idle = deferred();
+    const firstCtx = commandCtx({ waitForIdle: vi.fn(() => idle.promise) });
+    const secondCtx = commandCtx();
+
+    const pending = firstHandler("scout guarded task", firstCtx);
+    expect(secondToolCallHandler(
+      { type: "tool_call", toolCallId: "tc-instance", toolName: "bash", input: {} },
+      secondCtx,
+    )).toBeUndefined();
+
+    idle.resolve();
+    await pending;
+  });
+
+  it.each([
+    ["sendUserMessage", "send failed"],
+    ["waitForIdle", "wait failed"],
+  ])("clears the guardrail when %s rejects", async (failurePoint, message) => {
+    const pi = mockExtensionAPI();
+    if (failurePoint === "sendUserMessage") {
+      pi.sendUserMessage.mockRejectedValueOnce(new Error(message));
+    }
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+    const handler = getCommandHandler(pi);
+    const toolCallHandler = getToolCallHandler(pi);
+    const ctx = commandCtx(
+      failurePoint === "waitForIdle"
+        ? { waitForIdle: vi.fn().mockRejectedValueOnce(new Error(message)) }
+        : {},
+    );
+
+    await handler("scout failing task", ctx);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      `Subagent failed: ${message}`,
+      "error",
+    );
+    expect(toolCallHandler(
+      { type: "tool_call", toolCallId: "tc-6", toolName: "bash", input: {} },
+      ctx,
+    )).toBeUndefined();
   });
 });

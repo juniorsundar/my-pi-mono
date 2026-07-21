@@ -106,7 +106,9 @@ function extractToolDef(pi: ReturnType<typeof mockExtensionAPI>) {
 function mockExtensionAPI() {
   return {
     registerTool: vi.fn(),
+    registerCommand: vi.fn(),
     on: vi.fn(),
+    sendMessage: vi.fn(),
   };
 }
 
