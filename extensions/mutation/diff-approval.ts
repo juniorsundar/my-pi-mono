@@ -375,15 +375,17 @@ function renderMutationApprovalCard(
   const input = isRecord(args) ? args : {};
   const cwd = context.cwd;
   const targetPath = getPath(input);
+  const bgFn = getVerdictBg(context.state, theme);
 
   // While arguments are incomplete, show a stable one-line Pending Summary.
   // No file reads, validation, or diff generation during this phase.
   if (context.argsComplete === false) {
     const summary =
-      theme.fg("accent", "✎ ") +
-      theme.fg("toolTitle", `${toolName}  ${targetPath}`) +
+      theme.fg("toolTitle", theme.bold(toolName)) +
+      " " +
+      theme.fg("accent", targetPath) +
       theme.fg("dim", " · preparing diff…");
-    return renderApprovalBox([summary], theme);
+    return renderApprovalBox([summary], theme, bgFn);
   }
 
   const title = `Pi Approval | ${toolName} | ${targetPath}`;
@@ -394,7 +396,7 @@ function renderMutationApprovalCard(
     | undefined;
 
   if (cached?.key === cacheKey) {
-    return renderApprovalBox(cached.lines, theme);
+    return renderApprovalBox(cached.lines, theme, bgFn);
   }
 
   const lines: string[] = [];
@@ -407,16 +409,16 @@ function renderMutationApprovalCard(
         : validateAndApplyEditPreview(before.content, input);
 
     if (before.binary || before.unreadable || isLikelyBinaryText(validation.afterContent)) {
-      lines.push(theme.fg("accent", "✎ ") + theme.fg("toolTitle", `${toolName}  ${targetPath}`));
+      lines.push(theme.fg("toolTitle", theme.bold(toolName)) + " " + theme.fg("accent", targetPath));
       lines.push("");
       lines.push(theme.fg("warning", "Text diff preview unavailable for this file/change."));
       lines.push(theme.fg("dim", "Use the confirmation prompt to approve or deny."));
       state.mutationApprovalRender = { key: cacheKey, lines };
-      return renderApprovalBox(lines, theme);
+      return renderApprovalBox(lines, theme, bgFn);
     }
 
     if (!validation.ok) {
-      lines.push(theme.fg("accent", "✎ ") + theme.fg("toolTitle", `${toolName}  ${targetPath}`));
+      lines.push(theme.fg("toolTitle", theme.bold(toolName)) + " " + theme.fg("accent", targetPath));
       lines.push("");
       lines.push(theme.fg("error", "Unable to safely preview this edit."));
       for (const error of validation.errors ?? []) {
@@ -425,14 +427,15 @@ function renderMutationApprovalCard(
       lines.push("");
       lines.push(renderApprovalHints(theme));
       state.mutationApprovalRender = { key: cacheKey, lines };
-      return renderApprovalBox(lines, theme);
+      return renderApprovalBox(lines, theme, bgFn);
     }
 
     const summary = generateCompactDiff(before.content, validation.afterContent, targetPath, title);
     const hunkWord = summary.hunks.length === 1 ? "hunk" : "hunks";
     lines.push(
-      theme.fg("accent", "✎ ") +
-        theme.fg("toolTitle", `${toolName}  ${summary.fileName}`) +
+      theme.fg("toolTitle", theme.bold(toolName)) +
+        " " +
+        theme.fg("accent", summary.fileName) +
         theme.fg(
           "dim",
           `  +${summary.additions} -${summary.deletions}  ${summary.hunks.length} ${hunkWord}`,
@@ -460,7 +463,7 @@ function renderMutationApprovalCard(
       }
     }
   } catch (error) {
-    lines.push(theme.fg("accent", "✎ ") + theme.fg("toolTitle", `${toolName}  ${targetPath}`));
+    lines.push(theme.fg("toolTitle", theme.bold(toolName)) + " " + theme.fg("accent", targetPath));
     lines.push("");
     lines.push(theme.fg("error", "Failed to render mutation preview."));
     lines.push(theme.fg("dim", error instanceof Error ? error.message : String(error)));
@@ -469,14 +472,25 @@ function renderMutationApprovalCard(
   lines.push("");
   lines.push(renderApprovalHints(theme));
   state.mutationApprovalRender = { key: cacheKey, lines };
-  return renderApprovalBox(lines, theme);
+  return renderApprovalBox(lines, theme, bgFn);
 }
 
 function renderMutationResult(
   result: { content: Array<{ type: string; text?: string }> },
   theme: any,
-  context: { isError?: boolean },
+  context: { isError?: boolean; state?: Record<string, unknown>; invalidate?: () => void },
 ): Container | Text {
+  // Settle the verdict so the next renderCall rebuilds the approval card with
+  // the success/error background (mirrors native edit's settledError pattern).
+  // Invalidate once on the pending -> settled transition so the card
+  // re-renders; idempotent afterwards to avoid a render loop.
+  const state = context.state ?? {};
+  const newVerdict = context.isError ? "error" : "success";
+  if (state.mutationSettledVerdict !== newVerdict) {
+    state.mutationSettledVerdict = newVerdict;
+    context.invalidate?.();
+  }
+
   if (!context.isError) {
     return new Container();
   }
@@ -493,8 +507,15 @@ function renderApprovalHints(theme: any): string {
   return theme.fg("dim", "Diff preview — a prompt will appear for Approve / Deny / Inspect/Edit in Neovim / Expand diff view");
 }
 
-function renderApprovalBox(lines: string[], theme: any): Box {
-  const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+function getVerdictBg(state: Record<string, unknown> | undefined, theme: any): (text: string) => string {
+  const verdict = state?.mutationSettledVerdict;
+  if (verdict === "success") return (t) => theme.bg("toolSuccessBg", t);
+  if (verdict === "error") return (t) => theme.bg("toolErrorBg", t);
+  return (t) => theme.bg("customMessageBg", t);
+}
+
+function renderApprovalBox(lines: string[], theme: any, bgFn?: (text: string) => string): Box {
+  const box = new Box(1, 1, bgFn ?? ((t) => theme.bg("customMessageBg", t)));
   box.addChild(new Text(lines.join("\n"), 0, 0));
   return box;
 }
