@@ -375,7 +375,8 @@ function renderMutationApprovalCard(
   const input = isRecord(args) ? args : {};
   const cwd = context.cwd;
   const targetPath = getPath(input);
-  const bgFn = getVerdictBg(context.state, theme);
+  const state = context.state ?? {};
+  const bgFn = getVerdictBg(state, theme);
 
   // While arguments are incomplete, show a stable one-line Pending Summary.
   // No file reads, validation, or diff generation during this phase.
@@ -385,18 +386,17 @@ function renderMutationApprovalCard(
       " " +
       theme.fg("accent", targetPath) +
       theme.fg("dim", " · preparing diff…");
-    return renderApprovalBox([summary], theme, bgFn);
+    return renderApprovalBox([summary], theme, bgFn, state);
   }
 
   const title = `Pi Approval | ${toolName} | ${targetPath}`;
   const cacheKey = `${toolName}:${cwd}:${stableStringify(input)}`;
-  const state = context.state ?? {};
   const cached = state.mutationApprovalRender as
     | { key: string; lines: string[] }
     | undefined;
 
   if (cached?.key === cacheKey) {
-    return renderApprovalBox(cached.lines, theme, bgFn);
+    return renderApprovalBox(cached.lines, theme, bgFn, state);
   }
 
   const lines: string[] = [];
@@ -414,7 +414,7 @@ function renderMutationApprovalCard(
       lines.push(theme.fg("warning", "Text diff preview unavailable for this file/change."));
       lines.push(theme.fg("dim", "Use the confirmation prompt to approve or deny."));
       state.mutationApprovalRender = { key: cacheKey, lines };
-      return renderApprovalBox(lines, theme, bgFn);
+      return renderApprovalBox(lines, theme, bgFn, state);
     }
 
     if (!validation.ok) {
@@ -427,7 +427,7 @@ function renderMutationApprovalCard(
       lines.push("");
       lines.push(renderApprovalHints(theme));
       state.mutationApprovalRender = { key: cacheKey, lines };
-      return renderApprovalBox(lines, theme, bgFn);
+      return renderApprovalBox(lines, theme, bgFn, state);
     }
 
     const summary = generateCompactDiff(before.content, validation.afterContent, targetPath, title);
@@ -472,7 +472,7 @@ function renderMutationApprovalCard(
   lines.push("");
   lines.push(renderApprovalHints(theme));
   state.mutationApprovalRender = { key: cacheKey, lines };
-  return renderApprovalBox(lines, theme, bgFn);
+  return renderApprovalBox(lines, theme, bgFn, state);
 }
 
 function renderMutationResult(
@@ -480,16 +480,19 @@ function renderMutationResult(
   theme: any,
   context: { isError?: boolean; state?: Record<string, unknown>; invalidate?: () => void },
 ): Container | Text {
-  // Settle the verdict so the next renderCall rebuilds the approval card with
-  // the success/error background (mirrors native edit's settledError pattern).
-  // Invalidate once on the pending -> settled transition so the card
-  // re-renders; idempotent afterwards to avoid a render loop.
+  // Settle the verdict and repaint the approval card's background in place.
+  // We must NOT call context.invalidate() here: invalidate() re-enters
+  // updateDisplay() while it is still building this very row, clearing and
+  // re-adding the call/result components mid-render and corrupting the child
+  // list (duplicate result components), which crashes the TUI. Mutating the
+  // already-mounted Box's bgFn achieves the settle transition without a
+  // re-entrant render; the framework's own requestRender() repaints it.
   const state = context.state ?? {};
   const newVerdict = context.isError ? "error" : "success";
-  if (state.mutationSettledVerdict !== newVerdict) {
-    state.mutationSettledVerdict = newVerdict;
-    context.invalidate?.();
-  }
+  state.mutationSettledVerdict = newVerdict;
+
+  const box = state.mutationApprovalBox as Box | undefined;
+  box?.setBgFn(getVerdictBg(state, theme));
 
   if (!context.isError) {
     return new Container();
@@ -514,8 +517,21 @@ function getVerdictBg(state: Record<string, unknown> | undefined, theme: any): (
   return (t) => theme.bg("customMessageBg", t);
 }
 
-function renderApprovalBox(lines: string[], theme: any, bgFn?: (text: string) => string): Box {
-  const box = new Box(1, 1, bgFn ?? ((t) => theme.bg("customMessageBg", t)));
+function renderApprovalBox(
+  lines: string[],
+  theme: any,
+  bgFn: (text: string) => string,
+  state?: Record<string, unknown>,
+): Box {
+  // Reuse the mounted Box so renderResult can repaint its background in place
+  // (avoids calling invalidate() from within a render pass).
+  let box = state?.mutationApprovalBox as Box | undefined;
+  if (!box) {
+    box = new Box(1, 1, bgFn ?? ((t) => theme.bg("customMessageBg", t)));
+    if (state) state.mutationApprovalBox = box;
+  }
+  box.setBgFn(bgFn ?? ((t) => theme.bg("customMessageBg", t)));
+  box.clear();
   box.addChild(new Text(lines.join("\n"), 0, 0));
   return box;
 }

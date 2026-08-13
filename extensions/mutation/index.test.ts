@@ -30,7 +30,10 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 vi.mock("@earendil-works/pi-tui", () => ({
   Box: class {
     children: any[] = [];
+    bgFn: any;
     addChild(child: any) { this.children.push(child); }
+    clear() { this.children = []; }
+    setBgFn(bgFn: any) { this.bgFn = bgFn; }
   },
   Container: class {
     children: any[] = [];
@@ -657,5 +660,104 @@ describe("mutation tool_call approval wiring", () => {
     );
 
     expect(result).toBeUndefined();
+  });
+
+  it("repaints the approval card background on settle without invalidating", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "before\n", "utf8");
+
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+      const writeTool = tools.find((tool) => tool.name === "write");
+
+      // Track background color names so we can assert the settle transition.
+      const bgColors: string[] = [];
+      const theme = {
+        fg: (_name: string, text: string) => text,
+        bg: (name: string, text: string) => {
+          bgColors.push(name);
+          return text;
+        },
+        bold: (text: string) => text,
+      };
+
+      const state: Record<string, unknown> = {};
+      const args = { path: "target.txt", content: "after\n" };
+
+      // Mount the approval card (argsComplete) — the box is stored on state.
+      const box = writeTool.renderCall(args, theme, {
+        cwd,
+        state,
+        executionStarted: false,
+        argsComplete: true,
+      });
+      expect(state.mutationApprovalBox).toBe(box);
+
+      // Settle successfully. This must not call context.invalidate(), which
+      // re-enters updateDisplay() mid-render and corrupts the tool row.
+      let invalidateCalls = 0;
+      writeTool.renderResult(
+        { content: [] },
+        {},
+        theme,
+        { state, isError: false, invalidate: () => invalidateCalls++ },
+      );
+
+      expect(invalidateCalls).toBe(0);
+      expect(state.mutationSettledVerdict).toBe("success");
+
+      // The mounted box background now samples the success color.
+      (state.mutationApprovalBox as any).bgFn("x");
+      expect(bgColors).toContain("toolSuccessBg");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("repaints the approval card background to error on a failed settle", () => {
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      const filePath = join(cwd, "target.txt");
+      writeFileSync(filePath, "before\n", "utf8");
+
+      const { pi, tools } = makePi();
+      mutationExtension(pi);
+      const writeTool = tools.find((tool) => tool.name === "write");
+
+      const bgColors: string[] = [];
+      const theme = {
+        fg: (_name: string, text: string) => text,
+        bg: (name: string, text: string) => {
+          bgColors.push(name);
+          return text;
+        },
+        bold: (text: string) => text,
+      };
+
+      const state: Record<string, unknown> = {};
+      const args = { path: "target.txt", content: "after\n" };
+
+      writeTool.renderCall(args, theme, {
+        cwd,
+        state,
+        executionStarted: false,
+        argsComplete: true,
+      });
+
+      writeTool.renderResult(
+        { content: [{ type: "text", text: "boom" }] },
+        {},
+        theme,
+        { state, isError: true, invalidate: () => undefined },
+      );
+
+      expect(state.mutationSettledVerdict).toBe("error");
+      (state.mutationApprovalBox as any).bgFn("x");
+      expect(bgColors).toContain("toolErrorBg");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

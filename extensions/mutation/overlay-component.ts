@@ -186,13 +186,21 @@ export class DiffOverlayComponent {
 
     // ── Top border with title ──
     const titleStr = ` ${this.title} `;
-    const titleVW = visibleWidth(th.fg("accent", titleStr));
-    const leftDash = Math.floor((innerW - titleVW) / 2);
+    // Fit the title to the inner width first: a long target path (or a narrow
+    // terminal) used to make leftDash negative and crash String.repeat() here.
+    const maxTitleWidth = Math.max(0, innerW);
+    const fittedTitle =
+      visibleWidth(titleStr) > maxTitleWidth
+        ? truncateToWidth(titleStr, maxTitleWidth, "", false)
+        : titleStr;
+    const coloredTitle = th.fg("accent", fittedTitle);
+    const titleVW = visibleWidth(coloredTitle);
+    const leftDash = Math.max(0, Math.floor((innerW - titleVW) / 2));
     const rightDash = Math.max(0, innerW - titleVW - leftDash);
     result.push(
       border("╭") +
         border("─".repeat(leftDash)) +
-        th.fg("accent", titleStr) +
+        coloredTitle +
         border("─".repeat(rightDash)) +
         border("╮"),
     );
