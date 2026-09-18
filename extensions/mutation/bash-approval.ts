@@ -10,11 +10,6 @@ import {
 } from "./neovim-approval-utils.js";
 import { evaluateConfirmation, getCurrentProfile } from "./permission-policy.js";
 
-type PermissionRequest = {
-  title: string;
-  body: string;
-};
-
 type UiContext = {
   cwd: string;
   hasUI: boolean;
@@ -81,8 +76,10 @@ async function approveBashCommand(
   ctx: UiContext,
 ): Promise<boolean> {
   while (true) {
-    const request = formatBashPermissionRequest("bash", input);
-    const choice = await ctx.ui.select(request.title, [
+    const command = isRecord(input) ? String(input.command ?? "").trim() : "";
+    const choice = await ctx.ui.select(
+      `${detectBashRisks(command).length ? "⚠️" : "🛠️"} Allow shell command?`,
+      [
       "Approve",
       "Deny",
       "Inspect/Edit in Neovim",
@@ -267,29 +264,6 @@ function runNeovimCommandApprovalProcess(
   });
 }
 
-function formatBashPermissionRequest(
-  toolName: string,
-  input: unknown,
-): PermissionRequest {
-  if (toolName !== "bash" || !isRecord(input)) {
-    return {
-      title: `Allow ${toolName}?`,
-      body: section("Raw input", truncate(JSON.stringify(input, null, 2))),
-    };
-  }
-
-  const command = String(input.command ?? "").trim();
-  const metadata = buildBashMetadata(input, command);
-
-  return {
-    title: `${detectBashRisks(command).length ? "⚠️" : "🛠️"} Allow shell command?`,
-    body: joinSections([
-      fieldBlock(metadata),
-      section("Command preview", previewBashCommand(command)),
-    ]),
-  };
-}
-
 function withEditedBashCommandAudit(
   originalCommand: string,
   modifiedCommand: string,
@@ -332,24 +306,6 @@ function buildBashMetadata(
     ["Lines", lines.toLocaleString()],
     ["SHA-256", hashText(command)],
   ];
-}
-
-function previewBashCommand(command: string): string {
-  const source = command || "<empty command>";
-  const wrapped = wrapLines(source, 120);
-  const lines = wrapped.split("\n");
-  const clippedLines = lines.slice(0, 30);
-  let preview = clippedLines.join("\n");
-
-  if (preview.length > 1200) {
-    preview = preview.slice(0, 1200);
-  }
-
-  const truncated =
-    lines.length > clippedLines.length || preview.length < wrapped.length;
-  return truncated
-    ? `${preview}\n\n… truncated; choose Inspect in Neovim for full command …`
-    : preview;
 }
 
 function wrapLines(text: string, width: number): string {
@@ -407,23 +363,6 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} byte(s)`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
-}
-
-function fieldBlock(fields: Array<[string, string]>): string {
-  const width = Math.max(...fields.map(([label]) => label.length));
-  return fields.map(([label, value]) => `${label.padEnd(width)} : ${value}`).join("\n");
-}
-
-function section(title: string, body: string): string {
-  return `── ${title} ──\n${body}`;
-}
-
-function joinSections(parts: string[]): string {
-  return parts.filter(Boolean).join("\n\n");
-}
-
-function truncate(value: string, max = 1200): string {
-  return value.length > max ? `${value.slice(0, max)}\n… truncated …` : value;
 }
 
 function hashText(value: string): string {

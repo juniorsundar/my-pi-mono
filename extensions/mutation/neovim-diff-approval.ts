@@ -218,7 +218,6 @@ function buildApprovalLua(
   const escapedDecisionPath = JSON.stringify(decisionPath);
   const escapedBeforePath = JSON.stringify(beforePath);
   const escapedAfterPath = JSON.stringify(afterPath);
-  const editableAfter = true;
   const statusText = `Pi Approval | ${request.toolName} | ${request.targetPath}`;
   const escapedStatus = JSON.stringify(statusText);
   const escapedToolName = JSON.stringify(request.toolName);
@@ -245,7 +244,7 @@ pcall(function() vim.opt.diffopt:append('indent-heuristic') end)
 local decision_file = ${escapedDecisionPath}
 local before_file = ${escapedBeforePath}
 local after_file = ${escapedAfterPath}
-local editable_after = ${editableAfter ? "true" : "false"}
+local editable_after = true
 local status_text = ${escapedStatus}
 local tool_name = ${escapedToolName}
 local target_path = ${escapedTargetPath}

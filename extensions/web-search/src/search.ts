@@ -12,7 +12,7 @@
  * null/missing-field handling, error paths). Internals free reign. Tests
  * assert shape + behaviour, not byte-identical prose.
  *
- * Library stack (#0008): native `fetch` + `undici` for HTTP.
+ * Library stack (#0008): native `fetch` for HTTP.
  */
 
 // ---------------------------------------------------------------------------

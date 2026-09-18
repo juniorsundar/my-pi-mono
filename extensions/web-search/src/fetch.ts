@@ -18,7 +18,7 @@
  * behaviour, not byte-identical prose.
  *
  * Library stack (#0008):
- *   - HTTP: native `fetch` + `undici` (redirect follows, timeout via AbortSignal).
+ *   - HTTP: native `fetch` (redirect follows, timeout via AbortSignal).
  *   - SSRF: hand-rolled `dns.promises.lookup` + `ipaddr.js` (all six categories).
  *   - Representation: reuses `./representation.ts`.
  *

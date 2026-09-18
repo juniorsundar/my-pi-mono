@@ -14,7 +14,7 @@
  */
 
 import type { CompletedEntry } from "./registry.js";
-import { truncateToWidth, wrapText } from "./text-utils.js";
+import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -216,20 +216,20 @@ export class BtwReviewComponent {
 
     // Result content — word-wrapped to fit available width
     if (result.type === "success") {
-      const wrappedLines = wrapText(result.text, contentWidth);
+      const wrappedLines = wrapTextWithAnsi(result.text, contentWidth);
       for (const wl of wrappedLines) {
         lines.push(this.theme.fg("toolOutput", wl));
       }
     } else {
       const errorMsg = `Error: ${result.error}`;
-      for (const wl of wrapText(errorMsg, contentWidth)) {
+      for (const wl of wrapTextWithAnsi(errorMsg, contentWidth)) {
         lines.push(this.theme.fg("error", wl));
       }
       if (result.exitCode !== undefined) {
         lines.push(this.theme.fg("dim", `Exit code: ${result.exitCode}`));
       }
       if (result.stderr) {
-        for (const wl of wrapText(result.stderr, contentWidth)) {
+        for (const wl of wrapTextWithAnsi(result.stderr, contentWidth)) {
           lines.push(this.theme.fg("dim", wl));
         }
       }

@@ -4,7 +4,6 @@ import { createRegistry, type BtwChildProcess } from "./registry.js";
 import { SpinningListComponent } from "./spinning-list.js";
 import { BtwReviewComponent } from "./review.js";
 import { spawnBtwProcess } from "./spawner.js";
-import { truncate } from "./text-utils.js";
 
 // Module-level BTW registry shared across the extension lifetime.
 // Persists across /new, /fork, /reload within the same process.
@@ -73,6 +72,12 @@ async function executeBtwQuery(
 
 function generateBtwId(): string {
   return `btw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// local helper: plain-text truncation (single call site)
+function truncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}...`;
 }
 
 // ── Extension Entry Point ────────────────────────────────────────────
