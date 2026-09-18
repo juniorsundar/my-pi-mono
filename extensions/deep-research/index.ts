@@ -39,10 +39,8 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
       const { agent_type, prompt } = params as { agent_type: string; prompt: string };
       const config = loadDeepresearchConfig().config;
 
-      let result: SpawnSubagentResult;
-      let wasRetried = false;
-      try {
-        result = await spawnSubagent({
+      const doSpawn = () =>
+        spawnSubagent({
           agentType: agent_type,
           task: prompt,
           agentsDir: DEEP_RESEARCH_AGENTS_DIR,
@@ -64,34 +62,18 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
             ...(config.subagentModel ? { model: config.subagentModel } : {}),
           },
         });
+
+      let result: SpawnSubagentResult;
+      let wasRetried = false;
+      try {
+        result = await doSpawn();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn("spawn_research_subagent: error spawning subagent, retrying once...", msg);
 
         // Retry once
         try {
-          result = await spawnSubagent({
-            agentType: agent_type,
-            task: prompt,
-            agentsDir: DEEP_RESEARCH_AGENTS_DIR,
-            workDir: ctx.cwd,
-            signal,
-            onProgress: onUpdate
-              ? (feed) => {
-                  try {
-                    onUpdate({
-                      content: [{ type: "text" as const, text: `[${agent_type}] ${feed.collapsed.text}` }],
-                      details: feed,
-                    });
-                  } catch (e) {
-                    console.warn("spawn_research_subagent onProgress: error sending update", e instanceof Error ? e.message : String(e));
-                  }
-                }
-              : undefined,
-            overrides: {
-              ...(config.subagentModel ? { model: config.subagentModel } : {}),
-            },
-          });
+          result = await doSpawn();
           wasRetried = true;
         } catch (e2) {
           const msg2 = e2 instanceof Error ? e2.message : String(e2);

@@ -46,8 +46,6 @@ import {
 	mediaTypeOf,
 	extensionFor,
 	isSupportedContentType,
-	downloadJson,
-	successJson,
 	errorJson,
 	FetchError,
 	_resetSsrfCache,
@@ -284,65 +282,11 @@ describe("validateUrl", () => {
 });
 
 // ===========================================================================
-// JSON builders
+// Error envelope builder (success/download envelopes are built inline by
+// finishFetch / runDownload — covered via fetchUrl/runDownload tests above)
 // ===========================================================================
 
-describe("downloadJson", () => {
-	it("returns the expected fields", () => {
-		const r = downloadJson({
-			url: "https://example.com/f.jpg",
-			finalUrl: "https://example.com/f.jpg",
-			statusCode: 200,
-			contentType: "image/jpeg",
-			path: "/tmp/test.jpg",
-			fileName: "test.jpg",
-			byteSize: 42,
-			sha1: "abc123",
-			warnings: ["test warning"],
-		});
-		expect(r).toEqual({
-			url: "https://example.com/f.jpg",
-			finalUrl: "https://example.com/f.jpg",
-			statusCode: 200,
-			contentType: "image/jpeg",
-			path: "/tmp/test.jpg",
-			fileName: "test.jpg",
-			byteSize: 42,
-			sha1: "abc123",
-			warnings: ["test warning"],
-		});
-	});
-	it("does not include text-mode fields", () => {
-		const r = downloadJson({
-			url: "u", finalUrl: "u", statusCode: 200, contentType: "image/jpeg",
-			path: "/tmp/t", fileName: "t", byteSize: 1, sha1: "x", warnings: [],
-		});
-		expect(r).not.toHaveProperty("content");
-		expect(r).not.toHaveProperty("format");
-		expect(r).not.toHaveProperty("truncated");
-		expect(r).not.toHaveProperty("title");
-	});
-});
-
-describe("successJson / errorJson", () => {
-	it("successJson includes contentArtifactPath only when truncated", () => {
-		const base = {
-			url: "u", finalUrl: "u", statusCode: 200, contentType: "text/plain",
-			title: null, outputFormat: "markdown" as const, content: "c",
-			truncated: true, fetchedBytes: 1, warnings: [],
-			contentArtifactPath: "/tmp/x.md" as string | null,
-		};
-		const r = successJson(base);
-		expect(r.contentArtifactPath).toBe("/tmp/x.md");
-	});
-	it("successJson omits contentArtifactPath when absent", () => {
-		const r = successJson({
-			url: "u", finalUrl: "u", statusCode: 200, contentType: "text/plain",
-			title: null, outputFormat: "markdown", content: "c", truncated: false,
-			fetchedBytes: 1, warnings: [],
-		});
-		expect(r).not.toHaveProperty("contentArtifactPath");
-	});
+describe("errorJson", () => {
 	it("errorJson includes details only when present", () => {
 		expect(errorJson("boom", "u")).toEqual({ error: "boom", url: "u" });
 		expect(errorJson("boom", "u", { host: "x" })).toEqual({
@@ -350,10 +294,6 @@ describe("successJson / errorJson", () => {
 		});
 	});
 });
-
-// ===========================================================================
-// fetchUrl integration: text mode
-// ===========================================================================
 
 function mockText(url: string, body: string, contentType: string) {
 	server.use(http.get(url, () => new HttpResponse(body, {

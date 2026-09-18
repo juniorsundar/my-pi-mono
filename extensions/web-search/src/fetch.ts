@@ -45,6 +45,7 @@ import {
 	fetchGithubTree as ghFetchTree,
 	renderTree as ghRenderTree,
 	isGitHubResource as ghIsResource,
+	isGhError,
 	type GhBlobResult,
 	type GhTreeResult,
 	type RenderFormat as GhRenderFormat,
@@ -163,6 +164,16 @@ export class FetchError extends Error {
 
 const privateHostCache = new Map<string, boolean>();
 
+/** ipaddr.js range → human-readable reason for the SSRF refusal message. */
+const RANGE_REASONS: Record<string, string> = {
+	loopback: "loopback address",
+	private: "private address",
+	linkLocal: "link-local address",
+	multicast: "multicast address",
+	unspecified: "unspecified address",
+	reserved: "reserved address",
+};
+
 /** Mockable DNS resolver. Tests replace `dnsResolver.lookup` to control SSRF
  * outcomes without touching real DNS. */
 export const dnsResolver = {
@@ -200,30 +211,10 @@ export async function isPrivateOrLocalAddress(
 		} catch {
 			continue;
 		}
-		const range = ip.range();
-		if (range === "loopback") {
+		const reason = RANGE_REASONS[ip.range()];
+		if (reason) {
 			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to loopback address: ${address}`];
-		}
-		if (range === "private") {
-			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to private address: ${address}`];
-		}
-		if (range === "linkLocal") {
-			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to link-local address: ${address}`];
-		}
-		if (range === "multicast") {
-			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to multicast address: ${address}`];
-		}
-		if (range === "unspecified") {
-			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to unspecified address: ${address}`];
-		}
-		if (range === "reserved") {
-			privateHostCache.set(hostname, true);
-			return [true, `Host resolves to reserved address: ${address}`];
+			return [true, `Host resolves to ${reason}: ${address}`];
 		}
 	}
 
@@ -409,15 +400,9 @@ export function isDownloadSupported(contentType: string | null): boolean {
 
 export function isBinaryContent(data: Buffer | Uint8Array): boolean {
 	const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-	// 1. Cannot decode as UTF-8 → binary.
-	let text: string;
-	try {
-		text = buf.toString("utf-8");
-	} catch {
-		return true;
-	}
-	// 2. Null bytes present → binary.
-	return text.includes("\x00");
+	// A null byte ⇒ binary. (Buffer.toString("utf-8") never throws — it replaces
+	// invalid bytes — so a decode-based check would be a no-op.)
+	return buf.includes(0);
 }
 
 export function mediaTypeOf(contentType: string | null): string | null {
@@ -440,79 +425,60 @@ export function extensionFor(contentType: string | null, url: string): string {
 	if (urlExt && urlExt.length <= 6 && /^[\x00-\x7f]+$/.test(urlExt)) {
 		return urlExt;
 	}
-	if (mediaType) {
-		const guessed = mimeExtensionFor(mediaType);
-		if (guessed) return guessed;
-	}
 	return ".bin";
 }
 
-/** Minimal mimetypes.guess_extension equivalent for the download allowlist. */
-function mimeExtensionFor(mediaType: string): string | null {
-	return DOWNLOAD_EXTENSIONS[mediaType] ?? null;
-}
 
 export function isSupportedContentType(contentType: string | null): boolean {
 	return categorizeContent(contentType) !== "unsupported";
 }
 
 // ---------------------------------------------------------------------------
-// JSON response builders
+// Success envelope — shared by the plain-HTTP, GitHub tree, and GitHub blob
+// paths. Errors keep the small `errorJson` builder below.
 // ---------------------------------------------------------------------------
 
-export function downloadJson(args: {
+interface PipelineTail {
 	url: string;
 	finalUrl: string;
 	statusCode: number;
 	contentType: string | null;
-	path: string;
-	fileName: string;
-	byteSize: number;
-	sha1: string;
-	warnings: string[];
-}): FetchDownload {
-	return {
-		url: args.url,
-		finalUrl: args.finalUrl,
-		statusCode: args.statusCode,
-		contentType: args.contentType,
-		path: args.path,
-		fileName: args.fileName,
-		byteSize: args.byteSize,
-		sha1: args.sha1,
-		warnings: args.warnings,
-	};
+	body: Buffer | Uint8Array;
+	fetchedBytes: number;
+	raw: boolean | undefined;
+	format: "markdown" | "text";
+	maxChars: number;
+	extraWarnings?: string[];
+	sourceTruncated?: boolean;
 }
 
-export function successJson(args: {
-	url: string;
-	finalUrl: string;
-	statusCode: number;
-	contentType: string | null;
-	title: string | null;
-	outputFormat: OutputFormat;
-	content: string;
-	truncated: boolean;
-	fetchedBytes: number;
-	warnings: string[];
-	contentArtifactPath?: string | null;
-	sourceTruncated?: boolean;
-}): FetchSuccess {
+function finishFetch(t: PipelineTail): FetchSuccess {
+	const effectiveFormat: OutputFormat = t.raw ? "raw" : t.format;
+	const pipeline = pipelineProcess({
+		body: t.body,
+		contentType: t.contentType,
+		url: t.url,
+		outputFormat: t.raw ? "text" : effectiveFormat,
+		maxChars: t.maxChars,
+		raw: t.raw,
+		sourceTruncated: t.sourceTruncated,
+	});
+
 	const result: FetchSuccess = {
-		url: args.url,
-		finalUrl: args.finalUrl,
-		statusCode: args.statusCode,
-		contentType: args.contentType,
-		title: args.title,
-		format: args.outputFormat,
-		content: args.content,
-		truncated: args.truncated,
-		contentLength: args.content.length,
-		fetchedBytes: args.fetchedBytes,
-		warnings: args.warnings,
-		sourceTruncated: args.sourceTruncated ?? false,
+		url: t.url,
+		finalUrl: t.finalUrl,
+		statusCode: t.statusCode,
+		contentType: t.contentType,
+		title: pipeline.title,
+		format: effectiveFormat,
+		content: pipeline.content,
+		truncated: pipeline.truncated,
+		contentLength: pipeline.content.length,
+		fetchedBytes: t.fetchedBytes,
+		warnings: t.extraWarnings ? [...t.extraWarnings, ...pipeline.warnings] : pipeline.warnings,
+		sourceTruncated: pipeline.sourceTruncated || (t.sourceTruncated ?? false),
 	};
-	if (args.contentArtifactPath) result.contentArtifactPath = args.contentArtifactPath;
+	if (pipeline.contentArtifactPath) result.contentArtifactPath = pipeline.contentArtifactPath;
 	return result;
 }
 
@@ -575,7 +541,7 @@ export async function runDownload(
 		);
 	}
 
-	return downloadJson({
+	return {
 		url,
 		finalUrl,
 		statusCode,
@@ -585,7 +551,7 @@ export async function runDownload(
 		byteSize: body.length,
 		sha1,
 		warnings,
-	});
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -629,9 +595,9 @@ export async function fetchUrl(
 		const classified = ghClassify(url);
 		if (ghIsResource(classified)) {
 			if (classified.type === "repository_root" || classified.type === "tree") {
-				return await runGithubTree(url, classified, opts, maxChars, format);
+				return await runGithubTree(url, opts, maxChars, format);
 			} else {
-				return await runGithubBlob(url, classified, opts, maxChars, format, maxBytes);
+				return await runGithubBlob(url, opts, maxChars, format, maxBytes);
 			}
 		}
 
@@ -641,30 +607,16 @@ export async function fetchUrl(
 
 		const fetchResult = await fetchResponse(url, timeout, maxBytes);
 
-		const effectiveFormat: OutputFormat = opts.raw ? "raw" : format;
-
-		const pipeline = pipelineProcess({
-			body: fetchResult.body,
-			contentType: fetchResult.contentType,
-			url: fetchResult.url,
-			outputFormat: opts.raw ? "text" : effectiveFormat,
-			maxChars,
-			raw: opts.raw,
-		});
-
-		return successJson({
+		return finishFetch({
 			url: fetchResult.url,
 			finalUrl: fetchResult.finalUrl,
 			statusCode: fetchResult.statusCode,
 			contentType: fetchResult.contentType,
-			title: pipeline.title,
-			outputFormat: effectiveFormat,
-			content: pipeline.content,
-			truncated: pipeline.truncated,
+			body: fetchResult.body,
 			fetchedBytes: fetchResult.fetchedBytes,
-			warnings: pipeline.warnings,
-			contentArtifactPath: pipeline.contentArtifactPath,
-			sourceTruncated: pipeline.sourceTruncated,
+			raw: opts.raw,
+			format,
+			maxChars,
 		});
 	} catch (exc) {
 		if (exc instanceof FetchError) {
@@ -679,15 +631,9 @@ export async function fetchUrl(
 // GitHub routing helpers (tree + blob paths) — wired in step 4/4.
 // ---------------------------------------------------------------------------
 
-/** Error-result type guard used across the GitHub helpers. */
-function isGhError(r: GhTreeResult | GhBlobResult): r is { error: string; url: string; details: Record<string, unknown> } {
-	return typeof (r as { error?: unknown }).error === "string";
-}
-
 /** Repository-root / tree path: fetch tree, render (or canonical JSON), pipe. */
 async function runGithubTree(
 	url: string,
-	_resource: { type: string },
 	opts: FetchOptions,
 	maxChars: number,
 	format: "markdown" | "text",
@@ -713,39 +659,25 @@ async function runGithubTree(
 	}
 	const contentType = opts.raw ? "application/json" : "text/plain; charset=utf-8";
 	const bodyBytes = Buffer.from(bodyStr, "utf-8");
-	const fetchedBytes = bodyBytes.length;
 
-	const pipeline = pipelineProcess({
-		body: bodyBytes,
-		contentType,
-		url,
-		outputFormat: opts.raw ? "text" : effectiveFormat,
-		maxChars,
-		raw: opts.raw,
-		sourceTruncated,
-	});
-
-	const allWarnings = [...treeWarnings, ...(pipeline.warnings ?? [])];
-	return successJson({
+	return finishFetch({
 		url,
 		finalUrl,
 		statusCode,
 		contentType,
-		title: pipeline.title,
-		outputFormat: effectiveFormat,
-		content: pipeline.content,
-		truncated: pipeline.truncated,
-		fetchedBytes,
-		warnings: allWarnings,
-		contentArtifactPath: pipeline.contentArtifactPath,
-		sourceTruncated: pipeline.sourceTruncated || sourceTruncated,
+		body: bodyBytes,
+		fetchedBytes: bodyBytes.length,
+		raw: opts.raw,
+		format,
+		maxChars,
+		extraWarnings: treeWarnings,
+		sourceTruncated,
 	});
 }
 
 /** Blob path: fetch blob content, then download / raw / text-extract. */
 async function runGithubBlob(
 	url: string,
-	_resource: { type: string },
 	opts: FetchOptions,
 	maxChars: number,
 	format: "markdown" | "text",
@@ -784,7 +716,7 @@ async function runGithubBlob(
 			targetPath = path.join(os.tmpdir(), `web-fetch-${sha1.slice(0, 12)}-${sha1.slice(0, 8)}${extension}`);
 		}
 		fs.writeFileSync(targetPath, decodedBytes);
-		return downloadJson({
+		return {
 			url,
 			finalUrl,
 			statusCode,
@@ -794,7 +726,7 @@ async function runGithubBlob(
 			byteSize: decodedBytes.length,
 			sha1,
 			warnings: [],
-		});
+		};
 	}
 
 	// Text / raw mode: detect binary content.
@@ -806,27 +738,15 @@ async function runGithubBlob(
 		);
 	}
 
-	const effectiveFormat: OutputFormat = opts.raw ? "raw" : format;
-	const pipeline = pipelineProcess({
-		body: decodedBytes,
-		contentType,
-		url,
-		outputFormat: opts.raw ? "text" : effectiveFormat,
-		maxChars,
-		raw: opts.raw,
-	});
-	return successJson({
+	return finishFetch({
 		url,
 		finalUrl,
 		statusCode,
 		contentType,
-		title: pipeline.title,
-		outputFormat: effectiveFormat,
-		content: pipeline.content,
-		truncated: pipeline.truncated,
+		body: decodedBytes,
 		fetchedBytes: decodedBytes.length,
-		warnings: pipeline.warnings,
-		contentArtifactPath: pipeline.contentArtifactPath,
-		sourceTruncated: pipeline.sourceTruncated,
+		raw: opts.raw,
+		format,
+		maxChars,
 	});
 }

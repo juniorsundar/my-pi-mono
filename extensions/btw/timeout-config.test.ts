@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 
 // ── Tests ────────────────────────────────────────────────────────────
 
@@ -7,10 +7,7 @@ describe("btw timeout config", () => {
     it("returns 300000ms (5 minutes) when no btw settings exist", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({});
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({})).toBe(300_000);
     });
   });
 
@@ -18,10 +15,7 @@ describe("btw timeout config", () => {
     it("returns the configured timeout value when btw.timeoutMs is set", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: 60_000 } });
-
-      expect(result.timeout).toBe(60_000);
-      expect(result.source).toBe("config");
+      expect(parseBtwTimeout({ btw: { timeoutMs: 60_000 } })).toBe(60_000);
     });
   });
 
@@ -29,19 +23,13 @@ describe("btw timeout config", () => {
     it("returns the default timeout when btw settings exist but timeoutMs is missing", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: {} });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: {} })).toBe(300_000);
     });
 
     it("returns the default timeout when btw settings exist but timeoutMs is undefined", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: undefined } });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: { timeoutMs: undefined } })).toBe(300_000);
     });
   });
 
@@ -49,46 +37,38 @@ describe("btw timeout config", () => {
     it("returns the default timeout when timeoutMs is NaN", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: NaN } });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: { timeoutMs: NaN } })).toBe(300_000);
     });
 
     it("returns the default timeout when timeoutMs is Infinity", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: Infinity } });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: { timeoutMs: Infinity } })).toBe(300_000);
     });
 
     it("returns the default timeout when timeoutMs is negative", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: -1 } });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: { timeoutMs: -1 } })).toBe(300_000);
     });
 
     it("returns the default timeout when timeoutMs is zero", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: 0 } });
-
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+      expect(parseBtwTimeout({ btw: { timeoutMs: 0 } })).toBe(300_000);
     });
 
     it("returns the default timeout when timeoutMs is a string", async () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
-      const result = parseBtwTimeout({ btw: { timeoutMs: "five minutes" } });
+      expect(parseBtwTimeout({ btw: { timeoutMs: "five minutes" } })).toBe(300_000);
+    });
 
-      expect(result.timeout).toBe(300_000);
-      expect(result.source).toBe("default");
+    it("returns the default timeout for null/undefined settings", async () => {
+      const { parseBtwTimeout } = await import("./timeout-config.js");
+
+      expect(parseBtwTimeout(null)).toBe(300_000);
+      expect(parseBtwTimeout(undefined)).toBe(300_000);
     });
   });
 
@@ -109,14 +89,6 @@ describe("btw timeout config", () => {
       const { parseBtwTimeout } = await import("./timeout-config.js");
 
       expect(typeof parseBtwTimeout).toBe("function");
-    });
-
-    it("exports the BtwTimeoutResult type", async () => {
-      const { parseBtwTimeout } = await import("./timeout-config.js");
-
-      const result = parseBtwTimeout({ btw: { timeoutMs: 60_000 } });
-      expect(result).toHaveProperty("timeout");
-      expect(result).toHaveProperty("source");
     });
   });
 });

@@ -387,11 +387,6 @@ describe("btw stream parser", () => {
       expect(source).not.toMatch(/interface BtwUsage/);
     });
 
-    it("parser.ts re-exports BtwToolTraceEntry and BtwUsage from types", async () => {
-      const source = await readSource("parser.ts");
-      expect(source).toMatch(/export\s+type\s+\{[^}]*BtwToolTraceEntry[^}]*\}\s*from\s*["']\.\/types/);
-      expect(source).toMatch(/export\s+type\s+\{[^}]*BtwUsage[^}]*\}\s*from\s*["']\.\/types/);
-    });
 
     it("spawner.ts no longer exports parseBtwOutput after extraction", async () => {
       const source = await readSource("spawner.ts");

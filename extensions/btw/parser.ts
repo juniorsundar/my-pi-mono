@@ -1,5 +1,5 @@
-export type { BtwToolTraceEntry, BtwUsage } from "./types.js";
 import type { BtwToolTraceEntry, BtwUsage } from "./types.js";
+import { extractTextContent } from "../subagents/src/safe-values.js";
 
 /**
  * Parse NDJSON lines from the BTW child process stdout and extract structured data.
@@ -78,18 +78,3 @@ export function parseBtwOutput(lines: string[]): {
   return { text, toolTrace, usage, model, stopReason };
 }
 
-function extractTextContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .filter(
-      (block): block is { type: string; text: string } =>
-        typeof block === "object" &&
-        block !== null &&
-        (block as Record<string, unknown>).type === "text" &&
-        typeof (block as Record<string, unknown>).text === "string",
-    )
-    .map((block) => (block as { text: string }).text)
-    .join("\n");
-}

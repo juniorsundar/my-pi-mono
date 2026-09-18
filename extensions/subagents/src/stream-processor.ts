@@ -1,5 +1,6 @@
 import type { ProgressEvent } from "./progress-event.js";
 import { cleanDisplayText, cleanThinkingText } from "./activity-feed-tool-formatting.js";
+import { extractTextContent, objectValue, stringValue } from "./safe-values.js";
 
 export type StreamResult =
   | { done: true; finalText: string }
@@ -289,17 +290,6 @@ function parseJsonObject(line: string): Record<string, unknown> | undefined {
   }
 }
 
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 interface Usage {
   input: number;
   output: number;
@@ -348,19 +338,6 @@ function lifecycleEvent(
     timestamp: timestamp(),
     status,
   };
-}
-
-function extractTextContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-
-  return content
-    .map((block) => objectValue(block))
-    .filter((block): block is Record<string, unknown> =>
-      Boolean(block && block.type === "text"),
-    )
-    .map((block) => stringValue(block.text))
-    .join("\n");
 }
 
 function extractFinalTextFromMessages(messagesValue: unknown): string {

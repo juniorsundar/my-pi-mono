@@ -11,9 +11,6 @@
 import type { BtwToolTraceEntry, BtwUsage } from "./types.js";
 import { parseBtwOutput } from "./parser.js";
 
-// Re-export shared types for backward compatibility
-export type { BtwToolTraceEntry, BtwUsage } from "./types.js";
-
 export interface BtwSpawnOptions {
   /** Session file path to fork. Null for ephemeral (no history). */
   sessionFile: string | null;

@@ -114,14 +114,4 @@ export class SpinningListComponent {
     }
   }
 
-  // ── Testing support ───────────────────────────────────────────────
-
-  /** Exposed for tests: get or set the current animation frame index. */
-  get currentFrame(): number {
-    return this.frame;
-  }
-
-  set currentFrame(f: number) {
-    this.frame = f;
-  }
 }

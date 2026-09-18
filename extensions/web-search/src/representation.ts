@@ -56,8 +56,6 @@ export interface PipelineResult {
 	sourceTruncated: boolean;
 	/** Non-fatal warnings from the pipeline. */
 	warnings: string[];
-	/** Length of `content`; kept in sync (mirrors the Python @property). */
-	readonly contentLength: number;
 }
 
 export interface ProcessOptions {
@@ -231,7 +229,6 @@ function stripAnchorLinks(container: Element): void {
 
 function extractViaReadability(
 	htmlText: string,
-	url: string,
 	outputFormat: OutputFormat,
 ): [string | null, string, string[]] {
 	const warnings: string[] = [];
@@ -304,7 +301,6 @@ function extractViaReadability(
 
 function extractHtml(
 	htmlText: string,
-	url: string,
 	outputFormat: OutputFormat,
 ): [string | null, string, string[]] {
 	const warnings: string[] = [];
@@ -339,7 +335,7 @@ function extractHtml(
 	}
 
 	if (useReadability) {
-		return extractViaReadability(htmlText, url, outputFormat);
+		return extractViaReadability(htmlText, outputFormat);
 	}
 
 	const title = extractTitle(document, workingContainer);
@@ -489,13 +485,11 @@ export function process(opts: ProcessOptions): PipelineResult {
 	let content: string;
 
 	if (raw) {
-		title = null;
-		warnings = [];
 		content = text;
 	} else {
 		const category = categorizeContent(contentType);
 		if (category === "html") {
-			[title, content, warnings] = extractHtml(text, url, outputFormat);
+			[title, content, warnings] = extractHtml(text, outputFormat);
 		} else {
 			[title, content, warnings] = extractTextLike(text, contentType, outputFormat);
 		}
@@ -520,8 +514,5 @@ export function process(opts: ProcessOptions): PipelineResult {
 		contentArtifactPath,
 		sourceTruncated,
 		warnings,
-		get contentLength() {
-			return truncatedContent.length;
-		},
 	};
 }

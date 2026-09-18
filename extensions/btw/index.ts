@@ -25,7 +25,7 @@ async function executeBtwQuery(
   options: { errorPrefix?: string; failPrefix?: string } = {},
 ): Promise<void> {
   const { errorPrefix = "", failPrefix = "" } = options;
-  const { timeout } = loadBtwTimeout();
+  const timeout = loadBtwTimeout();
   const sessionFile = ctx.sessionManager.getSessionFile() ?? null;
   const btwId = generateBtwId();
 

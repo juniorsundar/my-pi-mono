@@ -1,13 +1,4 @@
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
+import { objectValue, stringValue } from "./safe-values.js";
 
 function compactJson(value: unknown): string {
   try {

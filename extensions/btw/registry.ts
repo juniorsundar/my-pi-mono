@@ -2,8 +2,6 @@
 
 import type { BtwToolTraceEntry, BtwUsage } from "./types.js";
 
-// Re-export shared types for backward compatibility
-export type { BtwToolTraceEntry, BtwUsage } from "./types.js";
 
 /**
  * Minimal child process interface that both Node's ChildProcess and

@@ -3,51 +3,18 @@ import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
+import { search as runSearchInternal, type SearchResponse } from "./src/search.js";
 import {
-	search as runSearchInternal,
 	fetchUrl as fetchUrlInternal,
-	writeContentArtifact,
-	type OutputFormat,
-} from "./src/index.js";
+	type FetchSuccess,
+	type FetchDownload,
+	type FetchErrorResult,
+} from "./src/fetch.js";
+import { writeContentArtifact, type OutputFormat } from "./src/representation.js";
 
-interface SearchResult {
-	title: string;
-	href: string;
-	body: string;
-	publishedDate?: string;
-	engines?: string[];
-}
-
-interface SearchResponse {
-	results?: SearchResult[];
-	answers?: string[];
-	corrections?: string[];
-	suggestions?: string[];
-	error?: string;
-}
-
-interface FetchResponse {
-	url?: string;
-	finalUrl?: string;
-	statusCode?: number;
-	contentType?: string;
-	title?: string;
-	format?: "markdown" | "text" | "raw";
-	content?: string;
-	truncated?: boolean;
-	contentLength?: number;
-	fetchedBytes?: number;
-	warnings?: string[];
-	contentArtifactPath?: string;
-	sourceTruncated?: boolean;
-	error?: string;
-	details?: Record<string, unknown>;
-	data?: unknown;
-	path?: string;
-	fileName?: string;
-	byteSize?: number;
-	sha1?: string;
-}
+/** Loosened view over the fetchUrl() result union for formatting. */
+type FetchResponse = Partial<FetchSuccess & FetchDownload & FetchErrorResult>;
 
 const WebSearchParams = Type.Object({
 	query: Type.String({ description: "Search query string" }),
@@ -78,9 +45,6 @@ const WebSearchParams = Type.Object({
 
 const WebFetchParams = Type.Object({
 	url: Type.String({ description: "HTTP(S) URL to fetch and extract readable content from" }),
-	prompt: Type.Optional(Type.String({
-		description: "Optional question about the fetched document for the agent to answer",
-	})),
 	maxChars: Type.Optional(Type.Number({
 		description: "Maximum characters of extracted content to return (1000-100000, default 30000)",
 		minimum: 1000,
@@ -109,8 +73,7 @@ const WebFetchParams = Type.Object({
 const EXTENSION_DIR = __dirname;
 
 function getSettingsPath(): string {
-	const home = process.env.HOME || "";
-	return home ? path.join(home, ".pi", "agent", "settings.json") : "";
+	return path.join(homedir(), ".pi", "agent", "settings.json");
 }
 
 function getSearxngUrl(): string {
@@ -138,13 +101,7 @@ function getSearxngUrl(): string {
 	return url;
 }
 
-function clampMaxResults(value: number | undefined): number {
-	if (!Number.isFinite(value)) return 10;
-	return Math.max(1, Math.min(20, Math.trunc(value ?? 10)));
-}
-
 async function runSearch(
-	pi: ExtensionAPI,
 	params: {
 		query: string;
 		maxResults?: number;
@@ -168,7 +125,8 @@ async function runSearch(
 	try {
 		return await runSearchInternal(searxngUrl, {
 			query: params.query,
-			maxResults: clampMaxResults(params.maxResults),
+			// search() clamps maxResults to 1-20 internally
+			maxResults: params.maxResults,
 			language: params.language,
 			categories: params.categories,
 			safesearch: params.safesearch,
@@ -246,18 +204,7 @@ function formatResults(response: SearchResponse): string {
  */
 const INLINE_PREVIEW_CHARS = 1500;
 
-function clampMaxChars(value: number | undefined): number {
-	if (!Number.isFinite(value)) return 30_000;
-	return Math.max(1_000, Math.min(100_000, Math.trunc(value ?? 30_000)));
-}
-
-function normalFetchedFormat(value: unknown): "markdown" | "text" {
-	if (value === "markdown" || value === "text") return value;
-	return "markdown";
-}
-
 async function runFetch(
-	pi: ExtensionAPI,
 	params: {
 		url: string;
 		maxChars?: number;
@@ -266,17 +213,17 @@ async function runFetch(
 		raw?: boolean;
 	},
 	signal?: AbortSignal,
-	timeoutMs?: number,
 ): Promise<FetchResponse> {
 	// In-process call to the TS port (final cut, #0009). Previously this
 	// shelled out to `uv run --project . python scripts/fetch.py`.
 	try {
 		return await fetchUrlInternal(params.url, {
-			maxChars: clampMaxChars(params.maxChars),
-			format: normalFetchedFormat(params.format ?? "markdown"),
+			// truncate() clamps maxChars to 1,000-100,000 internally
+			maxChars: params.maxChars,
+			format: params.format ?? "markdown",
 			raw: params.raw === true,
 			download: params.download === true,
-			timeout: Math.round((timeoutMs ?? (params.download ? 60_000 : 30_000)) / 1000),
+			timeout: Math.round((params.download ? 60_000 : 30_000) / 1000),
 		}) as FetchResponse;
 	} catch (error: any) {
 		return {
@@ -286,7 +233,7 @@ async function runFetch(
 	}
 }
 
-function formatFetchResult(response: FetchResponse, prompt?: string): string {
+function formatFetchResult(response: FetchResponse): string {
 	if (response.error) return `Fetch failed: ${response.error}`;
 
 	// Download mode: emit a short "saved to" notice instead of the full
@@ -309,10 +256,6 @@ function formatFetchResult(response: FetchResponse, prompt?: string): string {
 		if (response.warnings?.length) {
 			parts.push("**Warnings:**");
 			for (const w of response.warnings) parts.push(`- ${w}`);
-		}
-		if (prompt) {
-			parts.push("");
-			parts.push(`**Prompt for this file:** ${prompt}`);
 		}
 		return parts.join("\n");
 	}
@@ -339,11 +282,6 @@ function formatFetchResult(response: FetchResponse, prompt?: string): string {
 	if (response.warnings?.length) {
 		parts.push("**Warnings:**");
 		for (const w of response.warnings) parts.push(`- ${w}`);
-	}
-
-	if (prompt) {
-		parts.push("");
-		parts.push(`**Prompt for this document:** ${prompt}`);
 	}
 
 	if (response.content) {
@@ -410,7 +348,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 				details: { query: params.query },
 			});
 
-			const results = await runSearch(pi, {
+			const results = await runSearch({
 				query: params.query,
 				maxResults: params.maxResults,
 				language: params.language,
@@ -440,7 +378,6 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			" Use after web_search to read a specific URL." +
 			" Returns source metadata (title, status, content-type), the extracted text," +
 			" and a flag if the content was truncated." +
-			" Accepts an optional prompt for the agent to answer about the document." +
 			" Pass download=true to save a binary file (image, PDF) to a local temp path" +
 			" instead of extracting text; the returned path can then be passed to the read tool." +
 			" Pass raw=true to return the decoded source text (HTML, JSON, etc.) without extraction." +
@@ -463,7 +400,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 				details: { url: params.url },
 			});
 
-			const result = await runFetch(pi, {
+			const result = await runFetch({
 				url: params.url,
 				maxChars: params.maxChars,
 				format: params.format,
@@ -472,10 +409,9 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			}, signal);
 
 			return {
-				content: [{ type: "text", text: formatFetchResult(result, params.prompt) }],
+				content: [{ type: "text", text: formatFetchResult(result) }],
 				details: {
 					url: params.url,
-					prompt: params.prompt,
 					finalUrl: result.finalUrl,
 					statusCode: result.statusCode,
 					contentType: result.contentType,
@@ -488,7 +424,6 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 					sourceTruncated: result.sourceTruncated,
 					warnings: result.warnings,
 					details: result.details,
-					data: result.data,
 					// Download-mode fields (only populated when download=true).
 					path: result.path,
 					fileName: result.fileName,
@@ -510,7 +445,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			}
 
 			ctx.ui.notify(`Searching via SearXNG: ${query}`, "info");
-			const results = await runSearch(pi, { query }, ctx.signal);
+			const results = await runSearch({ query }, ctx.signal);
 			const text = formatResults(results);
 
 			pi.sendMessage(
@@ -545,7 +480,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			const raw = parts.indexOf("--raw") >= 0;
 
 			ctx.ui.notify(`Fetching: ${url}`, "info");
-			const result = await runFetch(pi, { url, maxChars, format, download, raw }, ctx.signal);
+			const result = await runFetch({ url, maxChars, format, download, raw }, ctx.signal);
 			const text = formatFetchResult(result);
 
 			pi.sendMessage(
@@ -553,21 +488,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 					customType: "web-fetch-result",
 					content: text,
 					display: true,
-					details: {
-						url,
-						finalUrl: result.finalUrl,
-						statusCode: result.statusCode,
-						contentArtifactPath: result.contentArtifactPath,
-						sourceTruncated: result.sourceTruncated,
-						warnings: result.warnings,
-						details: result.details,
-						data: result.data,
-						path: result.path,
-						fileName: result.fileName,
-						byteSize: result.byteSize,
-						sha1: result.sha1,
-						raw: result,
-					},
+					details: { url, contentArtifactPath: result.contentArtifactPath, raw: result },
 				},
 				{ triggerTurn: true },
 			);

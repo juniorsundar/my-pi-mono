@@ -1,9 +1,11 @@
 import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import type { Component, MarkdownTheme } from "@earendil-works/pi-tui";
 import {
+  flatLineSuffix,
   formatHiddenCount,
   isToolBlock,
   linePrefix,
+  toolStatusMarker,
   type ActivityFeedLine,
   type ActivityFeedOutput,
 } from "./activity-feed-formatter.js";
@@ -105,11 +107,7 @@ function renderToolHeader(
   theme: { bold: (text: string) => string; fg: (color: string, text: string) => string },
   spinnerChar?: string,
 ): string {
-  const status = line.status === "failed"
-    ? " ✗"
-    : line.status === "succeeded"
-    ? " ✓"
-    : "";
+  const status = toolStatusMarker(line.status);
   const bullet = spinnerChar ?? "●";
   const name = theme.bold(theme.fg("accent", line.toolName!));
   return `${bullet} ${name}${status}`;
@@ -120,12 +118,7 @@ function styleFlatLine(
   theme: { fg: (color: string, text: string) => string },
 ): string {
   const prefix = linePrefix(line);
-  const rawText = prefix ? `${prefix} ${line.text}` : line.text;
-  let text = rawText;
-  if (line.type !== "tool" && !isToolBlock(line)) {
-    if (line.status === "succeeded") text = `${rawText} ✓`;
-    else if (line.status === "failed") text = `${rawText} ✗`;
-  }
+  const text = (prefix ? `${prefix} ${line.text}` : line.text) + flatLineSuffix(line);
 
   if (line.type === "tool") {
     if (line.status === "failed") return theme.fg("error", text);

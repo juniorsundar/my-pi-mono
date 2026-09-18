@@ -74,19 +74,6 @@ export class UnknownAgentError extends Error {
   }
 }
 
-export class SubagentTimeoutError extends Error {
-  /** @deprecated Use returned error output, not thrown exceptions. */
-  constructor(
-    public readonly agentType: string,
-    public readonly timeoutMs: number,
-  ) {
-    super(
-      `Subagent "${agentType}" timed out after ${timeoutMs / 1000}s`,
-    );
-    this.name = "SubagentTimeoutError";
-  }
-}
-
 /** List available agent types from a directory of .md agent definitions. */
 export function listAvailableAgents(agentsDir: string): string[] {
   try {
@@ -136,9 +123,6 @@ export async function spawnSubagent(
   // 2d. Notify progress observer with initial empty feed
   const wrappedOnProgress = onProgress
     ? (feed: ActivityFeedOutput) => {
-        if (feed.usage) {
-          latestUsage = { ...feed.usage };
-        }
         try {
           onProgress(feed);
         } catch {

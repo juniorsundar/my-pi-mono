@@ -83,7 +83,6 @@ describe("process() tracer bullet", () => {
 		});
 		expect(r).toBeTruthy();
 		expect(typeof r.content).toBe("string");
-		expect(r.contentLength).toBe(r.content.length);
 	});
 });
 
@@ -362,17 +361,6 @@ describe("metadata propagation", () => {
 		expect(r.title).toBeNull();
 	});
 
-	it("contentLength matches content", () => {
-		const body = "Hello, world! ".repeat(10);
-		const r = run({
-			body: Buffer.from(body, "utf-8"),
-			contentType: "text/plain",
-			url: "https://example.com",
-			outputFormat: "text",
-			maxChars: 100_000,
-		});
-		expect(r.contentLength).toBe(r.content.length);
-	});
 
 	it("warnings propagate from extraction", () => {
 		const r = run({

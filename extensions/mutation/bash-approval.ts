@@ -291,7 +291,7 @@ function buildBashMetadata(
   const cwd =
     typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : ".";
   const lines = countLines(command);
-  const bytes = byteLength(command);
+  const bytes = Buffer.byteLength(command);
   const chars = command.length;
 
   return [
@@ -353,10 +353,6 @@ function readTrimmedFile(path: string): string {
 function countLines(text: string): number {
   if (!text.length) return 0;
   return text.endsWith("\n") ? text.slice(0, -1).split("\n").length : text.split("\n").length;
-}
-
-function byteLength(text: string): number {
-  return new TextEncoder().encode(text).length;
 }
 
 function formatBytes(bytes: number): string {

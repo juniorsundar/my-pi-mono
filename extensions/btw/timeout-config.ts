@@ -15,57 +15,30 @@ import { homedir } from "os";
 export const DEFAULT_BTW_TIMEOUT_MS = 300_000;
 
 /**
- * Source of the timeout value.
- * - 'config': User explicitly configured a valid timeout value.
- * - 'default': No valid configuration found; using the default.
- */
-export type BtwTimeoutSource = "config" | "default";
-
-/**
- * Result of loading the BTW timeout.
- */
-export interface BtwTimeoutResult {
-  /** The timeout value in milliseconds */
-  timeout: number;
-  /** Whether the timeout came from user config or the default */
-  source: BtwTimeoutSource;
-}
-
-/**
  * Get the paths to search for settings.json files.
  * Searches project-local (.pi/settings.json) first, then global (~/.pi/agent/settings.json).
  */
 function getSettingsPaths(): string[] {
-  const home = homedir();
-  return [
-    join(process.cwd(), ".pi", "settings.json"),
-    join(home, ".pi", "agent", "settings.json"),
-  ];
+	const home = homedir();
+	return [
+		join(process.cwd(), ".pi", "settings.json"),
+		join(home, ".pi", "agent", "settings.json"),
+	];
 }
 
 /**
  * Parse the BTW timeout from raw settings.
  *
- * This is a pure function that separates parsing from I/O.
+ * Pure function that separates parsing from I/O.
  * Strict typing: only actual `number` values are accepted.
  * Numeric strings like "60000" are rejected (use Number() beforehand if needed).
- *
- * @param raw - Raw settings object (may be null/undefined)
- * @returns Parsed timeout result with source attribution
  */
-export function parseBtwTimeout(raw: Record<string, unknown> | null | undefined): BtwTimeoutResult {
-  if (!raw) {
-    return { timeout: DEFAULT_BTW_TIMEOUT_MS, source: "default" };
-  }
-
-  const btwSettings = raw.btw as Record<string, unknown> | null | undefined;
-
-  const timeoutMs = btwSettings?.timeoutMs;
-  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-    return { timeout: DEFAULT_BTW_TIMEOUT_MS, source: "default" };
-  }
-
-  return { timeout: timeoutMs, source: "config" };
+export function parseBtwTimeout(raw: Record<string, unknown> | null | undefined): number {
+	const timeoutMs = (raw?.btw as Record<string, unknown> | undefined)?.timeoutMs;
+	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+		return DEFAULT_BTW_TIMEOUT_MS;
+	}
+	return timeoutMs;
 }
 
 /**
@@ -73,26 +46,19 @@ export function parseBtwTimeout(raw: Record<string, unknown> | null | undefined)
  *
  * Searches project-local (.pi/settings.json) first, then global (~/.pi/agent/settings.json).
  * The first file found with a `btw.timeoutMs` key wins.
- *
- * @returns Parsed timeout result with source attribution
  */
-export function loadBtwTimeout(): BtwTimeoutResult {
-  const paths = getSettingsPaths();
+export function loadBtwTimeout(): number {
+	for (const settingsPath of getSettingsPaths()) {
+		if (!existsSync(settingsPath)) continue;
 
-  for (const settingsPath of paths) {
-    if (!existsSync(settingsPath)) continue;
+		try {
+			const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+			const timeout = parseBtwTimeout(settings);
+			if (timeout !== DEFAULT_BTW_TIMEOUT_MS) return timeout;
+		} catch {
+			// Ignore parse errors and try next path
+		}
+	}
 
-    try {
-      const raw = readFileSync(settingsPath, "utf-8");
-      const settings = JSON.parse(raw) as Record<string, unknown>;
-      const result = parseBtwTimeout(settings);
-      if (result.source === "config") {
-        return result;
-      }
-    } catch {
-      // Ignore parse errors and try next path
-    }
-  }
-
-  return { timeout: DEFAULT_BTW_TIMEOUT_MS, source: "default" };
+	return DEFAULT_BTW_TIMEOUT_MS;
 }

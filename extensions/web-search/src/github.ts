@@ -154,11 +154,6 @@ function ghHeaders(token?: string | null): Record<string, string> {
 	return headers;
 }
 
-/** Encode a ref/path segment for a GitHub API path component. */
-function enc(s: string): string {
-	return encodeURIComponent(s);
-}
-
 /**
  * Resolve an ambiguous GitHub ref string against the GitHub API.
  *
@@ -188,7 +183,7 @@ export async function resolveRef(
 
 	// --- Try branches ---
 	for (const prefix of candidates) {
-		const url = `${GITHUB_API}/repos/${owner}/${repo}/branches/${enc(prefix)}`;
+		const url = `${GITHUB_API}/repos/${owner}/${repo}/branches/${encodeURIComponent(prefix)}`;
 		const resp = await fetch(url, { headers, redirect: "manual" });
 		if (resp.status === 200) {
 			return { ref: prefix, pathRemainder: pathRemainder(prefix, fullRef) };
@@ -197,16 +192,11 @@ export async function resolveRef(
 
 	// --- Try tags (via git ref API) ---
 	for (const prefix of candidates) {
-		const url = `${GITHUB_API}/repos/${owner}/${repo}/git/ref/tags/${enc(prefix)}`;
+		const url = `${GITHUB_API}/repos/${owner}/${repo}/git/ref/tags/${encodeURIComponent(prefix)}`;
 		const resp = await fetch(url, { headers, redirect: "manual" });
 		if (resp.status === 200) {
 			return { ref: prefix, pathRemainder: pathRemainder(prefix, fullRef) };
 		}
-	}
-
-	// --- Try commit SHA (redundant with short-circuit, matches Python) ---
-	if (SHA_RE.test(sha)) {
-		return { ref: sha, pathRemainder: pathRemainder(sha, fullRef) };
 	}
 
 	throw new Error(`cannot resolve ref '${fullRef}' for ${owner}/${repo}`);
@@ -242,15 +232,9 @@ function httpErrorDetails(
 	return details;
 }
 
-/** A reason phrase fallback (fetch Responses don't expose one). */
-function reasonPhrase(statusCode: number): string {
-	const phrases: Record<number, string> = {
-		200: "OK", 301: "Moved Permanently", 302: "Found", 304: "Not Modified",
-		400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
-		409: "Conflict", 422: "Unprocessable Entity", 429: "Too Many Requests",
-		500: "Internal Server Error", 502: "Bad Gateway", 503: "Service Unavailable",
-	};
-	return phrases[statusCode] ?? "Unknown";
+/** Reason phrase from the response; statusText can be empty (HTTP/2, mocks). */
+function reasonPhrase(response: Response): string {
+	return response.statusText || `HTTP ${response.status}`;
 }
 
 /** Build the GitHub API URL for a recognised resource. */
@@ -261,48 +245,37 @@ function buildApiUrl(resource: GitHubResource): string {
 	// tree and blob both use the contents API; differences are handled by
 	// the caller based on the response shape.
 	const repoPath = resource.path ?? "";
-	let url = `${GITHUB_API}/repos/${resource.owner}/${resource.repo}/contents/${enc(repoPath)}`;
+	let url = `${GITHUB_API}/repos/${resource.owner}/${resource.repo}/contents/${encodeURIComponent(repoPath)}`;
 	if (resource.ref) {
-		url += `?ref=${enc(resource.ref)}`;
+		url += `?ref=${encodeURIComponent(resource.ref)}`;
 	}
 	return url;
 }
 
 // ---------------------------------------------------------------------------
-// fetch_github_resource — repo metadata / generic contents API fetch.
+// Shared GitHub API fetch — one request/error envelope for all API calls.
 // ---------------------------------------------------------------------------
 
-export interface GhResourceSuccess {
+interface GhApiPayload {
 	url: string;
 	finalUrl: string;
 	statusCode: number;
 	contentType: string;
 	data: unknown; // parsed API response (object | array)
 }
-export type GhResourceResult = GhResourceSuccess | GhError;
 
-export async function fetchGithubResource(
+/** Shared GitHub API GET: network/HTTP/media-type/JSON errors → GhError. */
+async function ghApiFetch(
 	url: string,
-	token?: string | null,
-): Promise<GhResourceResult> {
-	const resolvedToken = resolveToken(token);
-	const authenticated = resolvedToken !== undefined;
-
-	const classified = classify(url);
-	if (!isGitHubResource(classified)) {
-		return {
-			error: `Not a recognised GitHub resource: ${classified.reason}`,
-			url,
-			details: {},
-		};
-	}
-
-	const apiUrl = buildApiUrl(classified);
+	apiUrl: string,
+	token: string | undefined,
+): Promise<GhApiPayload | GhError> {
+	const authenticated = token !== undefined;
 
 	let response: Response;
 	try {
 		response = await fetch(apiUrl, {
-			headers: ghHeaders(resolvedToken),
+			headers: ghHeaders(token),
 			redirect: "manual",
 			signal: AbortSignal.timeout(20_000),
 		});
@@ -318,7 +291,7 @@ export async function fetchGithubResource(
 
 	if (response.status >= 400) {
 		return {
-			error: `GitHub API returned ${response.status}: ${reasonPhrase(response.status)}`,
+			error: `GitHub API returned ${response.status}: ${reasonPhrase(response)}`,
 			url,
 			details: httpErrorDetails(response.status, response.headers, authenticated),
 		};
@@ -329,37 +302,35 @@ export async function fetchGithubResource(
 		return {
 			error: `GitHub API returned unexpected media type: ${responseContentType}`,
 			url,
-			details: {
-				statusCode: response.status,
-				contentType: responseContentType,
-				authenticated,
-			},
+			details: { authenticated },
 		};
 	}
 
 	let data: unknown;
 	try {
 		data = await response.json();
-	} catch (exc: any) {
+	} catch {
 		return {
 			error: "GitHub API returned malformed JSON",
 			url,
-			details: {
-				statusCode: response.status,
-				contentType: responseContentType,
-				authenticated,
-			},
+			details: { authenticated },
 		};
 	}
 
-	const contentType = responseContentType || "application/json";
 	return {
 		url,
 		finalUrl,
 		statusCode: response.status,
-		contentType,
+		contentType: responseContentType || "application/json",
 		data,
 	};
+}
+
+/** Type guard for the GhError envelope shared by all GitHub fetchers. */
+export function isGhError(
+	r: GhApiPayload | GhTreeResult | GhBlobResult,
+): r is GhError {
+	return typeof (r as { error?: unknown }).error === "string";
 }
 
 // ---------------------------------------------------------------------------
@@ -420,52 +391,9 @@ export async function fetchGithubBlobContent(
 		};
 	}
 
-	const apiUrl = buildApiUrl(classified);
-
-	let response: Response;
-	try {
-		response = await fetch(apiUrl, {
-			headers: ghHeaders(resolvedToken),
-			redirect: "manual",
-			signal: AbortSignal.timeout(20_000),
-		});
-	} catch (exc: any) {
-		return {
-			error: `GitHub API request failed: ${exc?.message ?? String(exc)}`,
-			url,
-			details: { authenticated },
-		};
-	}
-
-	const finalUrl = response.url || apiUrl;
-
-	if (response.status >= 400) {
-		return {
-			error: `GitHub API returned ${response.status}: ${reasonPhrase(response.status)}`,
-			url,
-			details: httpErrorDetails(response.status, response.headers, authenticated),
-		};
-	}
-
-	const responseContentType = response.headers.get("content-type") ?? "";
-	if (responseContentType && !responseContentType.toLowerCase().includes("json")) {
-		return {
-			error: `Unexpected response content type from GitHub API: ${responseContentType}`,
-			url,
-			details: { authenticated },
-		};
-	}
-
-	let data: unknown;
-	try {
-		data = await response.json();
-	} catch (exc: any) {
-		return {
-			error: `GitHub API returned malformed JSON: ${exc?.message ?? String(exc)}`,
-			url,
-			details: { authenticated },
-		};
-	}
+	const apiResult = await ghApiFetch(url, buildApiUrl(classified), resolvedToken);
+	if (isGhError(apiResult)) return apiResult;
+	const data = apiResult.data;
 
 	if (typeof data !== "object" || data === null || Array.isArray(data)) {
 		return {
@@ -500,8 +428,8 @@ export async function fetchGithubBlobContent(
 
 	return {
 		url,
-		finalUrl,
-		statusCode: response.status,
+		finalUrl: apiResult.finalUrl,
+		statusCode: apiResult.statusCode,
 		contentType,
 		name,
 		size,
@@ -574,39 +502,11 @@ export async function fetchGithubTree(
 
 	// 2. Fetch repo metadata for default_branch.
 	const repoApi = `${GITHUB_API}/repos/${owner}/${repo}`;
-	let repoResp: Response;
-	try {
-		repoResp = await fetch(repoApi, {
-			headers: ghHeaders(resolvedToken),
-			redirect: "manual",
-			signal: AbortSignal.timeout(20_000),
-		});
-	} catch (exc: any) {
-		return {
-			error: `GitHub API request failed: ${exc?.message ?? String(exc)}`,
-			url,
-			details: { authenticated },
-		};
-	}
-	if (repoResp.status >= 400) {
-		return {
-			error: `GitHub API returned ${repoResp.status}: ${reasonPhrase(repoResp.status)}`,
-			url,
-			details: httpErrorDetails(repoResp.status, repoResp.headers, authenticated),
-		};
-	}
-	let repoData: any;
-	try {
-		repoData = await repoResp.json();
-	} catch {
-		return {
-			error: "GitHub API returned malformed JSON for repo metadata",
-			url,
-			details: { authenticated },
-		};
-	}
+	const repoResult = await ghApiFetch(url, repoApi, resolvedToken);
+	if (isGhError(repoResult)) return repoResult;
+	const repoData = repoResult.data as { default_branch?: string };
 	const defaultBranch: string = repoData?.default_branch ?? "main";
-	const finalUrl = repoResp.url || repoApi;
+	const finalUrl = repoResult.finalUrl;
 
 	// 3. Determine effective ref and path.
 	let ref: string;
@@ -638,38 +538,10 @@ export async function fetchGithubTree(
 	}
 
 	// 4. Get commit SHA from the ref (handles branches, tags, and SHAs).
-	const commitUrl = `${GITHUB_API}/repos/${owner}/${repo}/commits/${enc(ref)}`;
-	let commitResp: Response;
-	try {
-		commitResp = await fetch(commitUrl, {
-			headers: ghHeaders(resolvedToken),
-			redirect: "manual",
-			signal: AbortSignal.timeout(20_000),
-		});
-	} catch (exc: any) {
-		return {
-			error: `GitHub API request failed: ${exc?.message ?? String(exc)}`,
-			url,
-			details: { authenticated },
-		};
-	}
-	if (commitResp.status >= 400) {
-		return {
-			error: `GitHub API returned ${commitResp.status}: ${reasonPhrase(commitResp.status)}`,
-			url,
-			details: httpErrorDetails(commitResp.status, commitResp.headers, authenticated),
-		};
-	}
-	let commitData: any;
-	try {
-		commitData = await commitResp.json();
-	} catch {
-		return {
-			error: "GitHub API returned malformed JSON for commit",
-			url,
-			details: { authenticated },
-		};
-	}
+	const commitUrl = `${GITHUB_API}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`;
+	const commitResult = await ghApiFetch(url, commitUrl, resolvedToken);
+	if (isGhError(commitResult)) return commitResult;
+	const commitData = commitResult.data as { sha?: string };
 	const commitSha: string | undefined = commitData?.sha;
 	if (!commitSha) {
 		return {
@@ -681,38 +553,9 @@ export async function fetchGithubTree(
 
 	// 5. Fetch recursive git tree.
 	const treeUrl = `${GITHUB_API}/repos/${owner}/${repo}/git/trees/${commitSha}?recursive=1`;
-	let treeResp: Response;
-	try {
-		treeResp = await fetch(treeUrl, {
-			headers: ghHeaders(resolvedToken),
-			redirect: "manual",
-			signal: AbortSignal.timeout(20_000),
-		});
-	} catch (exc: any) {
-		return {
-			error: `GitHub API request failed: ${exc?.message ?? String(exc)}`,
-			url,
-			details: { authenticated },
-		};
-	}
-	if (treeResp.status >= 400) {
-		return {
-			error: `GitHub API returned ${treeResp.status}: ${reasonPhrase(treeResp.status)}`,
-			url,
-			details: httpErrorDetails(treeResp.status, treeResp.headers, authenticated),
-		};
-	}
-	let treeData: any;
-	try {
-		treeData = await treeResp.json();
-	} catch {
-		return {
-			error: "GitHub API returned malformed JSON for git tree",
-			url,
-			details: { authenticated },
-		};
-	}
-
+	const treeResult = await ghApiFetch(url, treeUrl, resolvedToken);
+	if (isGhError(treeResult)) return treeResult;
+	const treeData = treeResult.data as { truncated?: boolean; tree?: unknown[] };
 	const upstreamTruncated: boolean = Boolean(treeData?.truncated);
 	const rawEntries: any[] = Array.isArray(treeData?.tree) ? treeData.tree : [];
 

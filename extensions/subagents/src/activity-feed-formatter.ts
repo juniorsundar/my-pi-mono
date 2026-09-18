@@ -162,12 +162,7 @@ function toActivityFeedLines(events: readonly ProgressEvent[]): ActivityFeedLine
 
 function formatLineText(line: ActivityFeedLine): string {
   if (isToolBlock(line)) {
-    const statusMarker = line.status === "failed"
-      ? " ✗"
-      : line.status === "succeeded"
-      ? " ✓"
-      : "";
-    const header = `● ${line.toolName}${statusMarker}`;
+    const header = `● ${line.toolName}${toolStatusMarker(line.status)}`;
     const params = `└ ${summarizeToolArgs(line.toolName!, line.toolArgs ?? {})}`;
     const result = line.toolResultPreview ? [`└─╼ ${line.toolResultPreview}`] : [];
     return [header, params, ...result].join("\n");
@@ -179,11 +174,7 @@ function formatLineText(line: ActivityFeedLine): string {
 
   const prefix = linePrefix(line);
   const text = prefix ? `${prefix} ${line.text}` : line.text;
-  if (line.type !== "tool" && !isToolBlock(line)) {
-    if (line.status === "succeeded") return `${text} ✓`;
-    if (line.status === "failed") return `${text} ✗`;
-  }
-  return text;
+  return text + flatLineSuffix(line);
 }
 
 function isMergeableToolStart(line: ActivityFeedLine): boolean {
@@ -240,4 +231,19 @@ export function linePrefix(event: ActivityFeedLine): string {
 
 export function formatHiddenCount(hiddenCount: number): string {
   return `… ${hiddenCount} older event${hiddenCount === 1 ? "" : "s"} hidden …`;
+}
+
+/** " ✓" / " ✗" for a tool line's status (shared by text and TUI renderers). */
+export function toolStatusMarker(status?: ProgressEvent["status"]): string {
+  if (status === "failed") return " ✗";
+  if (status === "succeeded") return " ✓";
+  return "";
+}
+
+/** ✓/✗ suffix for flat (non-tool) lines; tool blocks carry their own marker. */
+export function flatLineSuffix(line: ActivityFeedLine): string {
+  if (line.type === "tool" || isToolBlock(line)) return "";
+  if (line.status === "succeeded") return " ✓";
+  if (line.status === "failed") return " ✗";
+  return "";
 }

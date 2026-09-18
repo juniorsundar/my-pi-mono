@@ -13,8 +13,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { setupServer } from "msw/node";
 import { http, HttpResponse } from "msw";
 
-import { search, fetchUrl } from "./index.js";
-import { dnsResolver } from "./fetch.js";
+import { search } from "./search.js";
+import { fetchUrl, dnsResolver } from "./fetch.js";
 import type {
 	SearchResponse,
 	FetchSuccess,
