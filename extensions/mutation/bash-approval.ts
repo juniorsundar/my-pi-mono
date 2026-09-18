@@ -9,7 +9,6 @@ import {
   shellQuote,
 } from "./neovim-approval-utils.js";
 import { evaluateConfirmation, getCurrentProfile } from "./permission-policy.js";
-import { emitVerdict } from "./verdict.js";
 
 type PermissionRequest = {
   title: string;
@@ -64,7 +63,7 @@ export default function registerBashApproval(pi: ExtensionAPI) {
     }
 
     return enqueueApproval(async () => {
-      const approved = await approveBashCommand(pi, event.input, ctx);
+      const approved = await approveBashCommand(event.input, ctx);
       if (!approved) return { block: true, reason: "Blocked by user" };
       return undefined;
     });
@@ -78,11 +77,9 @@ function enqueueApproval<T>(task: () => Promise<T>): Promise<T> {
 }
 
 async function approveBashCommand(
-  pi: ExtensionAPI,
   input: unknown,
   ctx: UiContext,
 ): Promise<boolean> {
-  const target = bashTarget(input);
   while (true) {
     const request = formatBashPermissionRequest("bash", input);
     const choice = await ctx.ui.select(request.title, [
@@ -92,14 +89,12 @@ async function approveBashCommand(
     ]);
 
     if (choice === "Approve") {
-      emitVerdict(pi, "approve", "bash", target);
       return true;
     }
 
     if (choice === "Inspect/Edit in Neovim") {
       if (!commandExists("nvim")) {
         ctx.ui.notify("Neovim was not found; denying bash command.", "warning");
-        emitVerdict(pi, "deny", "bash", target);
         return false;
       }
 
@@ -115,11 +110,9 @@ async function approveBashCommand(
                   result.approvedCommand,
                 );
         }
-        emitVerdict(pi, "approve", "bash", bashTarget(input));
         return true;
       }
       if (result.decision === "deny") {
-        emitVerdict(pi, "deny", "bash", target);
         return false;
       }
 
@@ -130,7 +123,6 @@ async function approveBashCommand(
       continue;
     }
 
-    emitVerdict(pi, "deny", "bash", target);
     return false;
   }
 }
@@ -444,14 +436,4 @@ function isSubagentChild(): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-// A short, single-line command preview used as the verdict target so the
-// transcript line stays readable (e.g. "✓ approved — npm test").
-function bashTarget(input: unknown): string {
-  if (!isRecord(input)) return "bash";
-  const command = typeof input.command === "string" ? input.command : "";
-  const firstLine = command.split("\n")[0]?.trim() ?? "";
-  const preview = firstLine.length > 120 ? `${firstLine.slice(0, 117)}…` : firstLine;
-  return preview || "bash";
 }

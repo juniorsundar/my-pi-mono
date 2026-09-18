@@ -5,8 +5,7 @@
  * flow for file changes: opens `nvim -d before after` with `:Approve`/`:Deny`
  * commands, smart layout (side-by-side / horizontal), and tmux integration.
  *
- * Used by the mutation diff-preview flow (and its /diff-preview prototype
- * commands) as the edit-in-Neovim escape hatch.
+ * Used by the edit/write guard as the Inspect-Edit-in-Neovim escape hatch.
  */
 
 import {
@@ -14,12 +13,10 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import {
   runNeovimWithArgsProcess,
   safePreviewBasename,
@@ -32,9 +29,6 @@ export interface FileSnapshot {
   exists: boolean;
   binary: boolean;
   unreadable: boolean;
-  fingerprint: string;
-  sizeBytes: number;
-  mtimeMs: number | null;
 }
 
 export interface EditValidation {
@@ -133,42 +127,22 @@ export async function runNeovimDiffApproval(
 
 export function readFileSnapshot(path: string): FileSnapshot {
   if (!existsSync(path)) {
-    return {
-      content: "",
-      exists: false,
-      binary: false,
-      unreadable: false,
-      fingerprint: "missing",
-      sizeBytes: 0,
-      mtimeMs: null,
-    };
+    return { content: "", exists: false, binary: false, unreadable: false };
   }
 
   try {
-    const stat = statSync(path);
     const buffer = readFileSync(path);
     const binary = isLikelyBinaryBuffer(buffer);
     const content = binary
       ? "<binary file omitted>\n"
       : buffer.toString("utf8");
-    return {
-      content,
-      exists: true,
-      binary,
-      unreadable: false,
-      fingerprint: `${stat.size}:${stat.mtimeMs}:${hashBuffer(buffer)}`,
-      sizeBytes: stat.size,
-      mtimeMs: stat.mtimeMs,
-    };
+    return { content, exists: true, binary, unreadable: false };
   } catch {
     return {
       content: "<unable to read existing file as utf8>\n",
       exists: true,
       binary: false,
       unreadable: true,
-      fingerprint: "unreadable",
-      sizeBytes: 0,
-      mtimeMs: null,
     };
   }
 }
@@ -391,11 +365,6 @@ function countOccurrences(text: string, needle: string): number {
   }
 }
 
-function splitLines(text: string): string[] {
-  if (!text) return [];
-  return text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
-}
-
 function isLikelyBinaryBuffer(buffer: Buffer): boolean {
   if (buffer.includes(0)) return true;
   try {
@@ -404,10 +373,6 @@ function isLikelyBinaryBuffer(buffer: Buffer): boolean {
   } catch {
     return true;
   }
-}
-
-function hashBuffer(buffer: Buffer): string {
-  return createHash("sha256").update(buffer).digest("hex");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

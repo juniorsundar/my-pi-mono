@@ -2,29 +2,6 @@
 
 This context describes the project language for pi agent extensions and workflows. Use these terms exactly in code, tests, issues, and design docs; don't drift to synonyms.
 
-## Mutation Diff Rendering
-
-The `edit` and `write` tools use a two-state inline rendering lifecycle. Argument streaming may update the partial target path, but it must not progressively generate or reveal diff lines.
-
-### Language
-
-**Pending Summary**:
-The single-line inline state shown for an `edit` or `write` call while its arguments are incomplete. It displays the tool name, any currently available partial path, and `preparing diff…`. Its height remains stable, and rendering it performs no file reads, edit validation, or diff generation.
-_Avoid_: Streaming diff, loading card, partial preview
-
-**Approval Card**:
-The existing compact inline mutation preview shown once an `edit` or `write` call's arguments are complete. Depending on the completed input, it contains the compact diff or the existing binary, unreadable-file, validation, or generation-error outcome. The name describes the component style; the card is rendered for all `edit` and `write` calls, including calls whose policy does not open an approval prompt.
-_Avoid_: Full diff (the card may truncate hunks), approval prompt (the prompt is a separate UI interaction)
-
-**Atomic Reveal**:
-The single transition from Pending Summary to Approval Card at Pi's `argsComplete` boundary. The Approval Card's contents are prepared and presented as one render rather than accumulated as arguments stream.
-_Avoid_: Buffered streaming (no preview work occurs during the pending phase)
-
-### Flagged ambiguities
-
-- **Approval Card vs approval prompt**: The Approval Card is a read-only inline transcript component. The approve/deny/Neovim/expanded-view selector is a separate interaction with an independent lifecycle.
-- **Atomic Reveal vs immutable row**: The Pending Summary's partial path may grow as arguments stream. The guarantee is stable one-line height and no preview work, not that every character remains unchanged.
-
 ## Web Search and Fetch
 
 Finding public web resources and turning a selected resource into content an agent can inspect safely.
@@ -284,11 +261,19 @@ A permission and approval boundary around tools that can change files, shell sta
 ### Language
 
 **Mutation Package**:
-A single Pi extension package that owns mutation-related policy and approval behavior, including edit/write diff approval, bash approval, and permission profile commands/status.
+A single Pi extension package that owns mutation-related policy and approval behavior, including the edit/write guard, bash approval, and permission profile commands/status.
 _Avoid_: Confirm mutating tools, permission profiles package, mutation folder split
 
+**Edit/Write Guard**:
+The user decision point for `edit` and `write` calls: a focus-grabbing selector offering Approve / Deny / Inspect-Edit in Neovim. Inline tool rendering is Pi's native preview; the package adds no preview UI of its own.
+_Avoid_: Approval Card, Pending Summary, Atomic Reveal, diff preview, Expand diff view
+
+**Plain Confirm Fallback**:
+The plain text confirmation used when a change cannot be previewed as a diff (binary, unreadable, or unsafe edit validation) or when Neovim is unavailable. No diff is generated in this path.
+_Avoid_: Error card, warning card
+
 **Bash Approval**:
-A user decision point for a shell command that may mutate files, shell state, or external system state. It is separate from edit/write diff approval because the thing being approved is a command, not a file content transition.
+A user decision point for a shell command that may mutate files, shell state, or external system state. It is separate from the Edit/Write Guard because the thing being approved is a command, not a file content transition.
 _Avoid_: Confirm mutating tools, shell gate, bash permission prompt
 
 ### Flagged ambiguities

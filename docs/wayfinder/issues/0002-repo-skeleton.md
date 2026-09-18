@@ -24,7 +24,7 @@ my-pi-mono/
   extensions/
     btw/index.ts (+ parser, registry, review, spawner, spinning-list, text-utils, timeout-config, types)
     deep-research/index.ts (+ config, state-manager)
-    mutation/index.ts (+ bash-approval, diff-approval, diff-generation, neovim-*, overlay-component, permission-policy, permission-profile, verdict)
+    mutation/index.ts (+ bash-approval, diff-approval, neovim-*, permission-policy, permission-profile)
     web-search/index.ts (+ scripts/*.py, .venv/, pyproject.toml, uv.lock)
     subagents/index.ts  (re-export barrel: export { default, resolveModel, formatCallHeader } from "./src/index")
       src/   (activity-feed-*, agent-definition-parser, command-builder, index, process-registry, progress-event, spawner, stream-processor, task-workspace, workspace-store)

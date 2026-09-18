@@ -24,7 +24,6 @@ vi.mock("./neovim-approval-utils", () => ({
 
 function makePi() {
   const handlers: Record<string, Function[]> = {};
-  const messages: any[] = [];
   return {
     pi: {
       on: (eventName: string, handler: Function) => {
@@ -32,10 +31,8 @@ function makePi() {
         handlers[eventName]!.push(handler);
       },
       appendEntry: () => undefined,
-      sendMessage: (message: unknown) => messages.push(message),
     } as any,
     handlers,
-    messages,
   };
 }
 
@@ -52,7 +49,7 @@ describe("bash approval neovim integration", () => {
     // Isolate from any PI_PERMISSION_PROFILE inherited from the environment.
     delete process.env.PI_PERMISSION_PROFILE;
     setCurrentProfile("ask");
-    const { pi, handlers, messages } = makePi();
+    const { pi, handlers } = makePi();
     registerBashApproval(pi);
 
     const notify = vi.fn();
@@ -100,9 +97,6 @@ describe("bash approval neovim integration", () => {
       "No Neovim decision; returning to bash approval prompt.",
       "warning",
     );
-    expect(
-      messages.some((m: any) => m.customType === "mutation-verdict" && m.details?.verdict === "denied"),
-    ).toBe(true);
 
     const launchOptions = runNeovimWithArgsProcess.mock.calls[0]?.[0];
     expect(launchOptions?.windowTitlePrefix).toBe("pi bash");
