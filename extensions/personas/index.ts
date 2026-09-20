@@ -13,6 +13,9 @@ import {
 export type PersonasExtensionOptions = PersonaDirectories;
 
 const PERSONA_STATUS_KEY = "persona";
+const PERSONA_STATE_CUSTOM_TYPE = "personas-state";
+const PERSONA_SWITCH_NOTICE_CUSTOM_TYPE = "personas-switch-notice";
+const DEFAULT_SWITCH_NOTICE = "Persona switched: default — pi's built-in prompt";
 const DEFAULT_ALIASES = new Set(["off", "default", "none"]);
 const DEFAULT_PICKER_LABEL = "Default — pi's built-in prompt";
 const REJECTED_MESSAGE = "Persona switch rejected: the agent is still running.";
@@ -41,14 +44,26 @@ export default function personasExtension(
       return;
     }
     activePersona = persona;
+    pi.appendEntry(PERSONA_STATE_CUSTOM_TYPE, { persona: persona.name });
     ctx.ui.setStatus(PERSONA_STATUS_KEY, `persona:${persona.name}`);
     ctx.ui.notify(`Switched to persona ${persona.name}.`, "info");
+    pi.sendMessage({
+      customType: PERSONA_SWITCH_NOTICE_CUSTOM_TYPE,
+      content: `Persona switched: ${personaLabel(persona)}`,
+      display: true,
+    });
   }
 
   function clearActivePersona(ctx: ExtensionCommandContext): void {
     activePersona = undefined;
+    pi.appendEntry(PERSONA_STATE_CUSTOM_TYPE, { persona: undefined });
     ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
     ctx.ui.notify("Persona cleared — using pi's built-in prompt.", "info");
+    pi.sendMessage({
+      customType: PERSONA_SWITCH_NOTICE_CUSTOM_TYPE,
+      content: DEFAULT_SWITCH_NOTICE,
+      display: true,
+    });
   }
 
   // Waiting first keeps the in-flight turn on its current prompt; the recheck
@@ -136,6 +151,38 @@ export default function personasExtension(
       const available = valid.map((persona) => persona.name).join(", ");
       ctx.ui.notify(`Unknown persona "${input}". Available: ${available || "(none)"}`, "warning");
     },
+  });
+
+  // Restoring must not re-emit the switch notice — it is already part of the
+  // restored session context from the original switch.
+  pi.on("session_start", async (_event, ctx) => {
+    const stateEntry = ctx.sessionManager
+      .getEntries()
+      .filter(
+        (candidate) =>
+          candidate.type === "custom" &&
+          candidate.customType === PERSONA_STATE_CUSTOM_TYPE,
+      )
+      .pop() as { data?: { persona?: unknown } } | undefined;
+
+    const savedName = stateEntry?.data?.persona;
+    if (typeof savedName === "string") {
+      const persona = loadPersonasFromDirectory(globalDir)
+        .filter(isValidPersona)
+        .map((entry) => entry.persona)
+        .find((candidate) => candidate.name === savedName);
+      if (persona) {
+        activePersona = persona;
+        ctx.ui.setStatus(PERSONA_STATUS_KEY, `persona:${persona.name}`);
+        return;
+      }
+      ctx.ui.notify(
+        `Saved persona "${savedName}" is no longer available — using pi's built-in prompt.`,
+        "warning",
+      );
+    }
+    activePersona = undefined;
+    ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
   });
 
   pi.on("before_agent_start", (event) => {

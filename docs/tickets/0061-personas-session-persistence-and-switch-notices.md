@@ -12,14 +12,14 @@ Make the **Active persona** survive the session and make every **Persona switch*
 
 ### Acceptance criteria
 
-- [ ] Switching personas appends a persona-state session entry that is not part of the LLM context
-- [ ] The session-start handler reads prior entries and restores the active persona (status line reflects it)
-- [ ] Resuming a session with an active persona keeps that persona active; resuming an old session without an entry starts with none
-- [ ] A forked child session honors the parent's active persona
-- [ ] Every persona switch injects a context-visible switch notice naming the new persona and its description
-- [ ] Returning to default injects the default-shaped notice and records the cleared state
-- [ ] The persona survives compaction (the per-turn override still applies after compacting)
-- [ ] The active persona survives a persona → persona → default → persona sequence with the right entry, notice, and status at each step — all verified through the extension entry point seam
+- [x] Switching personas appends a persona-state session entry that is not part of the LLM context
+- [x] The session-start handler reads prior entries and restores the active persona (status line reflects it)
+- [x] Resuming a session with an active persona keeps that persona active; resuming an old session without an entry starts with none
+- [x] A forked child session honors the parent's active persona
+- [x] Every persona switch injects a context-visible switch notice naming the new persona and its description
+- [x] Returning to default injects the default-shaped notice and records the cleared state
+- [x] The persona survives compaction (the per-turn override still applies after compacting)
+- [x] The active persona survives a persona → persona → default → persona sequence with the right entry, notice, and status at each step — all verified through the extension entry point seam
 
 ### Blocked by
 

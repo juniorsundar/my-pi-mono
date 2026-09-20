@@ -13,7 +13,7 @@ function createFakePi() {
   const commands: Array<{ name: string; options: any }> = [];
   const tools: unknown[] = [];
   const entries: Array<{ customType: string; data?: unknown }> = [];
-  const messages: Array<{ customType: string; content: string }> = [];
+  const messages: Array<{ customType: string; content: string; display?: boolean }> = [];
 
   const pi = {
     on: (event: string, handler: FakeHandler) => {
@@ -22,7 +22,7 @@ function createFakePi() {
     registerCommand: (name: string, options: any) => commands.push({ name, options }),
     registerTool: (tool: unknown) => tools.push(tool),
     appendEntry: (customType: string, data?: unknown) => entries.push({ customType, data }),
-    sendMessage: (message: { customType: string; content: string }) =>
+    sendMessage: (message: { customType: string; content: string; display?: boolean }) =>
       messages.push(message),
     sendUserMessage: vi.fn(),
   };
@@ -178,19 +178,6 @@ describe("personas extension", () => {
       expect(second).toEqual({ systemPrompt: "A different built-in prompt\n\nMentor the user." });
     });
 
-    it("leaves the session and conversation history untouched", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
-
-      await switchTo(fake, "mentor").promise;
-
-      expect(fake.entries).toHaveLength(0);
-      expect(fake.messages).toHaveLength(0);
-      expect(fake.sendUserMessage).not.toHaveBeenCalled();
-    });
-
     it("switching again replaces the active persona", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
@@ -245,6 +232,8 @@ describe("personas extension", () => {
 
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("replace"), "warning");
       expect(setStatus).not.toHaveBeenCalled();
+      expect(fake.entries).toHaveLength(0);
+      expect(fake.messages).toHaveLength(0);
       expect(beforeAgentStart(fake)).toBeUndefined();
     });
 
@@ -406,8 +395,8 @@ describe("personas extension", () => {
 
       expect(setStatus).toHaveBeenCalledWith("persona", undefined);
       expect(beforeAgentStart(fake)).toBeUndefined();
-      expect(fake.entries).toHaveLength(0);
-      expect(fake.messages).toHaveLength(0);
+      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: undefined } });
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: default — pi's built-in prompt");
     });
 
     it("prefers a colliding persona label over the Default entry", async () => {
@@ -480,6 +469,277 @@ describe("personas extension", () => {
 
       expect(setStatus).toHaveBeenCalledWith("persona", undefined);
       expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+  });
+
+  describe("session persistence and switch notices", () => {
+    const stateEntry = (persona: string | undefined) => ({
+      type: "custom",
+      customType: "personas-state",
+      data: { persona },
+    });
+
+    function sessionStart(
+      fake: FakePi,
+      entries: unknown[],
+      reason: "startup" | "reload" | "new" | "resume" | "fork" = "resume",
+    ) {
+      const { ctx, notify, setStatus } = createContext({
+        sessionManager: { getEntries: () => entries, getSessionFile: () => "/tmp/session.jsonl" },
+      });
+      const [handler] = getHandlers(fake, "session_start");
+      return { promise: handler({ type: "session_start", reason }, ctx), notify, setStatus };
+    }
+
+    function recordedEntries(fake: FakePi): unknown[] {
+      return fake.entries.map((entry, index) => ({ type: "custom", id: `e${index}`, ...entry }));
+    }
+
+    it("switching to a persona appends a persona-state entry that is not a context message", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      await switchTo(fake, "mentor").promise;
+
+      expect(fake.entries).toEqual([{ customType: "personas-state", data: { persona: "mentor" } }]);
+      expect(fake.sendUserMessage).not.toHaveBeenCalled();
+    });
+
+    it("entering a persona injects a context-visible switch notice with name and description", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      await switchTo(fake, "mentor").promise;
+
+      expect(fake.messages).toEqual([
+        {
+          customType: "personas-switch-notice",
+          content: "Persona switched: mentor — Guides learning",
+          display: true,
+        },
+      ]);
+    });
+
+    it("every persona-to-persona switch injects its own notice", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Mentors." }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer", description: "Reviews." }, "Review skeptically.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      await switchTo(fake, "mentor").promise;
+      await switchTo(fake, "reviewer").promise;
+
+      expect(fake.messages.map((message) => message.content)).toEqual([
+        "Persona switched: mentor — Mentors.",
+        "Persona switched: reviewer — Reviews.",
+      ]);
+    });
+
+    it("a persona without a description gets a notice naming just the persona", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      await switchTo(fake, "mentor").promise;
+
+      expect(fake.messages[0]?.content).toBe("Persona switched: mentor");
+    });
+
+    it("returning to default injects the default-shaped notice and records the cleared state", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      await switchTo(fake, "off").promise;
+
+      expect(fake.entries).toEqual([
+        { customType: "personas-state", data: { persona: "mentor" } },
+        { customType: "personas-state", data: { persona: undefined } },
+      ]);
+      expect(fake.messages).toEqual([
+        { customType: "personas-switch-notice", content: "Persona switched: mentor", display: true },
+        {
+          customType: "personas-switch-notice",
+          content: "Persona switched: default — pi's built-in prompt",
+          display: true,
+        },
+      ]);
+    });
+
+    it("a rejected switch records nothing and injects no notice", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+      const entriesBefore = [...fake.entries];
+      const messagesBefore = [...fake.messages];
+
+      const unknown = switchTo(fake, "ghost");
+      await unknown.promise;
+
+      expect(unknown.notify).toHaveBeenCalledWith(expect.stringContaining("Unknown persona"), "warning");
+      expect(fake.entries).toEqual(entriesBefore);
+      expect(fake.messages).toEqual(messagesBefore);
+    });
+
+    it("session-start restores the active persona from the last persona-state entry", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [
+        { type: "message", role: "user", content: "earlier" },
+        stateEntry("mentor"),
+      ]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+      expect(fake.messages).toHaveLength(0);
+    });
+
+    it("the latest persona-state entry wins when several were recorded", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" }, "Review skeptically.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor"), stateEntry("reviewer")]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:reviewer");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nReview skeptically.` });
+    });
+
+    it("a cleared-state entry resumes with no persona", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor"), stateEntry(undefined)]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("sessions recorded before this extension have no persona entry and start with none", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [{ type: "message", role: "user", content: "hi" }]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("a persona-state entry with malformed data starts with none", async () => {
+      const globalDir = makeGlobalDir();
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [
+        { type: "custom", customType: "personas-state", data: { persona: 42 } },
+      ]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("a saved persona whose definition no longer exists resumes with none and a warning", async () => {
+      const globalDir = makeGlobalDir();
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("ghost")]);
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("ghost"), "warning");
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("a forked child session (BTW) honors the parent's active persona", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor")], "fork");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+    });
+
+    it("the persona survives compaction: the override still applies and the entry stays restorable", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+
+      const { promise, setStatus } = sessionStart(fake, [...recordedEntries(fake), { type: "compaction", id: "c1" }], "reload");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+    });
+
+    it("persona → persona → default → persona keeps the right entry, notice, and status at each step", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer", description: "Reviews." }, "Review skeptically.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const first = switchTo(fake, "mentor");
+      await first.promise;
+      expect(first.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "mentor" } });
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: mentor — Guides learning");
+
+      const second = switchTo(fake, "reviewer");
+      await second.promise;
+      expect(second.setStatus).toHaveBeenCalledWith("persona", "persona:reviewer");
+      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "reviewer" } });
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: reviewer — Reviews.");
+
+      const third = switchTo(fake, "default");
+      await third.promise;
+      expect(third.setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: undefined } });
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: default — pi's built-in prompt");
+      expect(beforeAgentStart(fake)).toBeUndefined();
+
+      const fourth = switchTo(fake, "mentor");
+      await fourth.promise;
+      expect(fourth.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "mentor" } });
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: mentor — Guides learning");
+
+      const resume = sessionStart(fake, recordedEntries(fake));
+      await resume.promise;
+      expect(resume.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
     });
   });
 
