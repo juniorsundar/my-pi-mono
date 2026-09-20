@@ -12,13 +12,13 @@ Ship the one approved **Bundled persona** — `contrarian`, append mode, senior-
 
 ### Acceptance criteria
 
-- [ ] `contrarian` is available out of the box (append mode) and listed in the picker with its description
-- [ ] Its body encodes the locked calibration: skepticism as default posture, strongest objection first, concrete failure scenarios, explicit concession when proven wrong, no fabricated objections, no softening politeness
-- [ ] A same-named project or global `contrarian` shadows the bundled one
-- [ ] The bundled persona is overridable without touching the package
-- [ ] README documents: definition format, frontmatter fields, both prompt modes with defaults, directory precedence, hot reload, bundled-persona overriding
-- [ ] README uses the root context document's Personas vocabulary (Persona, Persona definition, directories, Prompt mode, Bundled persona) and avoids "mode"/"profile"/"agent" drift
-- [ ] Verified through the extension entry point seam that the bundled persona composes and switches like any other
+- [x] `contrarian` is available out of the box (append mode) and listed in the picker with its description
+- [x] Its body encodes the locked calibration: skepticism as default posture, strongest objection first, concrete failure scenarios, explicit concession when proven wrong, no fabricated objections, no softening politeness
+- [x] A same-named project or global `contrarian` shadows the bundled one
+- [x] The bundled persona is overridable without touching the package
+- [x] README documents: definition format, frontmatter fields, both prompt modes with defaults, directory precedence, hot reload, bundled-persona overriding
+- [x] README uses the root context document's Personas vocabulary (Persona, Persona definition, directories, Prompt mode, Bundled persona) and avoids "mode"/"profile"/"agent" drift
+- [x] Verified through the extension entry point seam that the bundled persona composes and switches like any other
 
 ### Blocked by
 

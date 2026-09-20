@@ -1234,4 +1234,52 @@ Current working directory: /tmp/test-project`,
       ]);
     });
   });
+
+  describe("bundled persona", () => {
+    // Only the machine-visible directories are overridden: the bundled directory
+    // resolves to the shipped extensions/personas/bundled, so these tests exercise the real shipped file.
+    function extensionWithShippedBundled(): FakePi {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { projectDir: missingDir(), globalDir: missingDir() });
+      return fake;
+    }
+
+    it("ships contrarian, switchable out of the box and composed in append mode", async () => {
+      const fake = extensionWithShippedBundled();
+
+      const { promise, ui, setStatus } = switchTo(fake, "contrarian");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:contrarian");
+      expect(ui.confirm).not.toHaveBeenCalled();
+      expect(fake.messages[0]?.content).toMatch(/^Persona switched: contrarian — \S/);
+      const prompt = beforeAgentStart(fake) as { systemPrompt: string };
+      expect(prompt.systemPrompt.startsWith(BUILT_IN_PROMPT)).toBe(true);
+      expect(prompt.systemPrompt).not.toBe(BUILT_IN_PROMPT);
+    });
+
+    it("lists the bundled persona in the picker with its description", async () => {
+      const fake = extensionWithShippedBundled();
+
+      const { promise, ui } = switchTo(fake, "");
+      await promise;
+
+      expect(ui.select).toHaveBeenCalledWith("Switch persona", [
+        expect.stringMatching(/^contrarian — \S/),
+        "Default — pi's built-in prompt",
+      ]);
+    });
+
+    it("a project persona definition shadows the bundled one without touching the package", async () => {
+      const projectDir = makeGlobalDir();
+      writePersonaDefinition(projectDir, "contrarian", { name: "contrarian" }, "Project contrarian.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { projectDir, globalDir: missingDir() });
+
+      const { promise } = switchTo(fake, "contrarian");
+      await promise;
+
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nProject contrarian.` });
+    });
+  });
 });
