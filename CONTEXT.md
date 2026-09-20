@@ -279,3 +279,55 @@ _Avoid_: Confirm mutating tools, shell gate, bash permission prompt
 ### Flagged ambiguities
 
 None currently.
+
+## Personas
+
+Named, switchable profiles for a session's **main agent** — the agent you talk to, never a spawned child. A persona changes how the main agent behaves by changing its system prompt mid-session.
+
+### Language
+
+**Persona**:
+A named, switchable profile applied to the main agent of a session. Changes the system prompt for subsequent turns only; prior conversation history is untouched. At most one persona is active at a time. A session with no persona active uses pi's built-in prompt.
+_Avoid_: Mode, profile, primary agent, agent ("profile" collides with permission profiles; "agent" collides with subagent agent types)
+
+**Persona definition**:
+The `.md` file declaring a persona: YAML frontmatter (`name`, `description`, and the prompt composition mode) plus a body that becomes the persona's prompt. Resolved from the **Project persona directory**, the **Global persona directory**, or shipped as a **Bundled persona**; on name collisions, project wins over global, global wins over bundled.
+_Avoid_: Persona config, persona spec, agent definition (that term belongs to subagents)
+
+**Project persona directory**:
+`.pi/personas/` in the project root. Same-named personas here take precedence over the Global persona directory.
+_Avoid_: Local personas, repo personas
+
+**Global persona directory**:
+`~/.pi/agent/personas/`. User-authored personas shared across projects.
+
+**Active persona**:
+The persona currently applied to the session. Zero or one, never several; switched via the `persona` command and restored after resume.
+
+**Persona switch**:
+Changing the active persona mid-session. Applies only to subsequent turns, persists across resume, and is announced to the model in context via a **Switch notice**.
+
+**Switch notice**:
+The context-visible record announcing a persona switch, so the model can account for commitments made under a previous persona. Distinct from the extension-internal record of the active persona, which is not context-visible.
+
+**Bundled persona**:
+A persona shipped inside the personas extension package as a starter. Lowest precedence: a same-named project or global persona replaces it.
+_Avoid_: Built-in persona, default persona ("default" means *no* persona active)
+
+**Prompt mode**:
+How a persona's body composes with pi's built-in prompt. **Append mode** keeps the built-in prompt and adds the persona body; **Replace mode** discards the built-in prompt and uses the persona body alone (pi's project context and skills are still attached in both modes). Personas default to append; replace requires an explicit confirmation at switch time.
+_Avoid_: System prompt strategy, merge mode
+
+### Flagged ambiguities
+
+- **Persona vs Agent Type**: An agent type (subagents) is a disposable child role spawned per task; a persona is a live profile of the main agent. Despite the shared `.md`-with-frontmatter shape, they are different concepts with different parsers and directories. A persona must never be spawnable, and an agent type must never be applicable as a persona.
+
+### Example dialogue
+
+> **Dev**: If I switch to the reviewer persona halfway through a conversation, does the reviewer see everything before?
+>
+> **Domain Expert**: Yes — the conversation history is untouched. The persona switch changes the system prompt for subsequent turns, and a switch notice in context tells the model a switch happened so it doesn't silently contradict commitments it made under the earlier persona.
+>
+> **Dev**: Is the persona a subagent then?
+>
+> **Domain Expert**: No. Nothing is spawned. The main agent keeps its tools, its session, and its history; only its prompt profile changes.
