@@ -501,35 +501,48 @@ Current working directory: /tmp/test-project`,
     });
   });
 
-  describe("frontmatter validation", () => {
-    it("unknown frontmatter field produces a parse error on direct switch", async () => {
+  describe("invalid persona definitions surfaced, never thrown", () => {
+    it("unknown frontmatter field, missing name, and broken YAML each yield a distinct, file-attributed parse error", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "unknown-field", { name: "ghost", colour: "blue" });
+      writeFileSync(join(globalDir, "missing-name.md"), "---\ndescription: nothing\n---\nBody.", "utf8");
+      writeFileSync(join(globalDir, "broken-yaml.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const expectedReasons: Record<string, string> = {
+        "unknown-field": "colour",
+        "missing-name": "'name'",
+        "broken-yaml": "Failed to parse YAML frontmatter",
+      };
+      const errors: string[] = [];
+      for (const stem of ["unknown-field", "missing-name", "broken-yaml"]) {
+        const { promise, notify } = switchTo(fake, stem);
+        await promise;
+        const [message, type] = notify.mock.calls.at(-1)!;
+        expect(type).toBe("warning");
+        expect(message).toContain(`${stem}.md`);
+        expect(message).toContain(expectedReasons[stem]);
+        errors.push(message as string);
+      }
+      expect(new Set(errors).size).toBe(3);
+    });
+
+    it("a direct switch to an invalid persona notifies the parse error instead of switching", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
       const fake = createFakePi();
       personasExtension(fake.pi as any, { globalDir });
 
       const { promise, notify, setStatus } = switchTo(fake, "broken");
       await promise;
 
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("colour"), "warning");
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("broken.md"), "warning");
       expect(setStatus).not.toHaveBeenCalled();
       expect(beforeAgentStart(fake)).toBeUndefined();
     });
 
-    it("missing name produces a parse error", async () => {
-      const globalDir = makeGlobalDir();
-      writeFileSync(join(globalDir, "noname.md"), "---\ndescription: nothing\n---\nBody.", "utf8");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
-
-      const { promise, notify } = switchTo(fake, "noname");
-      await promise;
-
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("name"), "warning");
-    });
-
-    it("invalid systemPromptMode value produces a parse error", async () => {
+    it("an invalid systemPromptMode value yields a file-attributed parse error", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "sideways", { name: "sideways", systemPromptMode: "sideways" });
       const fake = createFakePi();
@@ -538,7 +551,9 @@ Current working directory: /tmp/test-project`,
       const { promise, notify } = switchTo(fake, "sideways");
       await promise;
 
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("systemPromptMode"), "warning");
+      const [message] = notify.mock.calls[0];
+      expect(message).toContain("sideways.md");
+      expect(message).toContain("systemPromptMode");
     });
 
     it("broken files do not prevent valid personas from switching", async () => {
@@ -553,6 +568,82 @@ Current working directory: /tmp/test-project`,
       expect(beforeAgentStart(fake)).toEqual({
         systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.`,
       });
+    });
+
+    it("the picker renders invalid definitions as disabled entries carrying their parse error", async () => {
+      const projectDir = makeGlobalDir();
+      writeFileSync(join(projectDir, "broken.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { projectDir, globalDir, bundledDir: missingDir() });
+
+      const { promise, ui, notify } = switchTo(fake, "");
+      await promise;
+
+      const options = ui.select.mock.calls[0][1] as string[];
+      expect(options).toHaveLength(3);
+      expect(options[0]).toBe("mentor — Guides learning");
+      expect(options[1]).toMatch(/^broken\.md — Failed to parse YAML frontmatter:/);
+      expect(options[1]).toContain("[unclosed");
+      expect(options[2]).toBe("Default — pi's built-in prompt");
+      expect(notify).not.toHaveBeenCalled();
+
+      const selection = switchTo(fake, "");
+      selection.ui.select.mockResolvedValue("mentor — Guides learning");
+      await selection.promise;
+
+      expect(selection.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+    });
+
+    it("selecting a disabled picker entry notifies the parse error and switches nothing", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      await switchTo(fake, "mentor").promise;
+
+      const { promise, ui, notify, setStatus } = switchTo(fake, "");
+      ui.select.mockImplementation(async (_title: string, options: string[]) =>
+        options.find((option) => option.startsWith("broken.md")),
+      );
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("broken.md"), "warning");
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake).systemPrompt).toContain("Mentor the user.");
+    });
+
+    it("the non-UI listing includes broken definitions with their errors", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+
+      const { promise, notify } = switchTo(fake, "", { hasUI: false });
+      await promise;
+
+      const [message, type] = notify.mock.calls[0];
+      expect(type).toBe("info");
+      expect(message).toContain("mentor");
+      expect(message).toContain("broken.md");
+      expect(message).toContain("colour");
+    });
+
+    it("session startup succeeds with broken definition files present", async () => {
+      const globalDir = makeGlobalDir();
+      writeFileSync(join(globalDir, "broken.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("mentor")]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(notify).not.toHaveBeenCalled();
     });
   });
 
@@ -594,23 +685,6 @@ Current working directory: /tmp/test-project`,
       expect(ui.select).toHaveBeenCalledWith("Switch persona", [
         "mentor — Guides learning",
         "reviewer",
-        "Default — pi's built-in prompt",
-      ]);
-    });
-
-    it("surfaces broken definitions as warnings but leaves them out of the selector", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
-
-      const { promise, ui, notify } = switchTo(fake, "");
-      await promise;
-
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("colour"), "warning");
-      expect(ui.select).toHaveBeenCalledWith("Switch persona", [
-        "mentor",
         "Default — pi's built-in prompt",
       ]);
     });

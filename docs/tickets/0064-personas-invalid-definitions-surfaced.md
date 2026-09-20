@@ -12,12 +12,12 @@ Malformed **Persona definitions** must never brick a session, and must never hid
 
 ### Acceptance criteria
 
-- [ ] An unknown frontmatter field, a missing `name`, and invalid YAML each produce a distinct, file-attributed parse error
-- [ ] Invalid personas appear in the picker as disabled entries carrying the error text; they cannot be selected
-- [ ] A direct `/persona <name>` for an invalid persona notifies with the parse error rather than switching
-- [ ] Valid personas in the same directory (or other directories) remain fully selectable
-- [ ] Session startup, listing, and switching all succeed with broken files present
-- [ ] Error capture and disabled-entry rendering verified through the extension entry point seam
+- [x] An unknown frontmatter field, a missing `name`, and invalid YAML each produce a distinct, file-attributed parse error
+- [x] Invalid personas appear in the picker as disabled entries carrying the error text; they cannot be selected
+- [x] A direct `/persona <name>` for an invalid persona notifies with the parse error rather than switching
+- [x] Valid personas in the same directory (or other directories) remain fully selectable
+- [x] Session startup, listing, and switching all succeed with broken files present
+- [x] Error capture and disabled-entry rendering verified through the extension entry point seam
 
 ### Blocked by
 

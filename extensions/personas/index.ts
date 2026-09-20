@@ -90,28 +90,34 @@ export default function personasExtension(
     failed: FailedPersona[],
     ctx: ExtensionCommandContext,
   ): Promise<void> {
-    for (const entry of failed) {
-      ctx.ui.notify(
-        `Persona definition ${entry.fileName} failed to parse: ${entry.error}`,
-        "warning",
-      );
-    }
     if (!ctx.hasUI) {
       ctx.ui.notify(listPersonasMessage(valid, failed), "info");
       return;
     }
-    const options = [...valid.map(personaLabel), DEFAULT_PICKER_LABEL];
+    // Invalid definitions render as disabled entries between the valid personas
+    // and the Default entry; selecting one reports the parse error instead of switching.
+    const options = [
+      ...valid.map(personaLabel),
+      ...failed.map(failedPersonaLabel),
+      DEFAULT_PICKER_LABEL,
+    ];
     const choice = await ctx.ui.select("Switch persona", options);
     if (choice === undefined) return;
-    if (!(await ensureIdle(ctx))) return;
     const index = options.indexOf(choice);
     if (index === -1) return;
     // The Default entry sits last, so a persona whose label collides with it
     // wins the first match and can never be mistaken for the clear action.
-    if (index === valid.length) {
+    if (index === valid.length + failed.length) {
+      if (!(await ensureIdle(ctx))) return;
       clearActivePersona(ctx);
       return;
     }
+    const failedEntry = failed[index - valid.length];
+    if (failedEntry) {
+      ctx.ui.notify(parseErrorMessage(failedEntry), "warning");
+      return;
+    }
+    if (!(await ensureIdle(ctx))) return;
     await switchToPersona(valid[index], ctx);
   }
 
@@ -141,10 +147,7 @@ export default function personasExtension(
 
       const failedMatch = failedPersonas.find((entry) => personaFileNameStem(entry.fileName) === input);
       if (failedMatch) {
-        ctx.ui.notify(
-          `Persona definition ${failedMatch.fileName} failed to parse: ${failedMatch.error}`,
-          "warning",
-        );
+        ctx.ui.notify(parseErrorMessage(failedMatch), "warning");
         return;
       }
 
@@ -227,6 +230,14 @@ function composeSystemPrompt(event: BeforeAgentStartEvent, persona: PersonaDefin
 
 function personaLabel(persona: PersonaDefinition): string {
   return persona.description ? `${persona.name} — ${persona.description}` : persona.name;
+}
+
+function failedPersonaLabel(entry: FailedPersona): string {
+  return `${entry.fileName} — ${entry.error}`;
+}
+
+function parseErrorMessage(entry: FailedPersona): string {
+  return `Persona definition ${entry.fileName} failed to parse: ${entry.error}`;
 }
 
 function listPersonasMessage(valid: PersonaDefinition[], failed: FailedPersona[]): string {
