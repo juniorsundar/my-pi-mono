@@ -12,13 +12,13 @@ The first vertical slice of the personas extension, end to end: the extension pa
 
 ### Acceptance criteria
 
-- [ ] The extension loads cleanly when the global persona directory doesn't exist; no persona is active and pi behaves exactly as before
-- [ ] A valid persona definition in the global directory can be switched to via `/persona <name>`; the status line shows it
-- [ ] While active, every subsequent turn's system prompt is the built-in prompt plus the persona body; prior turns and conversation history are unchanged
-- [ ] Switching back is not yet in scope — but with no persona active, the per-turn hook returns nothing (pi's default prompt intact)
-- [ ] Frontmatter fields: `name` (required), `description`, `systemPromptMode` recognized; unknown fields produce a parse error
-- [ ] The extension factory accepts injected project/global/bundled directories (agentsDir-style options) — this slice wires only the global one
-- [ ] All behavior tested through the extension entry point seam: fake extension API, scripted UI, temp directories (prior art: mutation/btw/subagents index tests); no new seams; `npx vitest run` and `npm run typecheck` pass
+- [x] The extension loads cleanly when the global persona directory doesn't exist; no persona is active and pi behaves exactly as before
+- [x] A valid persona definition in the global directory can be switched to via `/persona <name>`; the status line shows it
+- [x] While active, every subsequent turn's system prompt is the built-in prompt plus the persona body; prior turns and conversation history are unchanged
+- [x] Switching back is not yet in scope — but with no persona active, the per-turn hook returns nothing (pi's default prompt intact)
+- [x] Frontmatter fields: `name` (required), `description`, `systemPromptMode` recognized; unknown fields produce a parse error
+- [x] The extension factory accepts injected project/global/bundled directories (agentsDir-style options) — this slice wires only the global one
+- [x] All behavior tested through the extension entry point seam: fake extension API, scripted UI, temp directories (prior art: mutation/btw/subagents index tests); no new seams; `npx vitest run` and `npm run typecheck` pass
 
 ### Blocked by
 
