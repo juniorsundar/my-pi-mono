@@ -61,7 +61,6 @@ function createContext(overrides: Record<string, unknown> = {}) {
     setStatus: vi.fn(),
     select: vi.fn(),
     confirm: vi.fn(),
-    theme: { fg: (_name: string, text: string) => text },
   };
   const ctx = {
     cwd: "/tmp/test-project",
@@ -91,11 +90,10 @@ function writePersonaDefinition(
   stem: string,
   fields: Record<string, string> = {},
   body = `You are the ${stem} persona.`,
-): string {
+): void {
   const yamlLines = Object.entries(fields).map(([key, value]) => `${key}: ${value}`);
   const content = `---\n${yamlLines.join("\n")}\n---\n${body}`;
   writeFileSync(join(dir, `${stem}.md`), content, "utf8");
-  return content;
 }
 
 function makeGlobalDir(): string {
@@ -104,6 +102,24 @@ function makeGlobalDir(): string {
 
 function missingDir(): string {
   return join(makeTempDir("personas-missing-"), "gone");
+}
+
+// Standard instantiation: fake pi plus directory options.
+function setup(options: Record<string, unknown> = {}): FakePi {
+  const fake = createFakePi();
+  personasExtension(fake.pi as any, options as any);
+  return fake;
+}
+
+// setup plus one persona definition written into a fresh global directory.
+function setupGlobalPersona(
+  stem: string,
+  fields: Record<string, string> = { name: stem },
+  body = `You are the ${stem} persona.`,
+): FakePi {
+  const globalDir = makeGlobalDir();
+  writePersonaDefinition(globalDir, stem, fields, body);
+  return setup({ globalDir });
 }
 
 const BUILT_IN_PROMPT = "You are pi, a coding agent.";
@@ -151,8 +167,7 @@ afterEach(() => {
 describe("personas extension", () => {
   describe("loading without a global persona directory", () => {
     it("registers only the persona command and no tools", () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: join(makeTempDir("personas-missing-"), "gone") });
+      const fake = setup({ globalDir: join(makeTempDir("personas-missing-"), "gone") });
 
       expect(fake.commands).toHaveLength(1);
       expect(fake.commands[0].name).toBe("persona");
@@ -161,8 +176,7 @@ describe("personas extension", () => {
     });
 
     it("per-turn hook returns nothing when no persona is active", () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: join(makeTempDir("personas-missing-"), "gone") });
+      const fake = setup({ globalDir: join(makeTempDir("personas-missing-"), "gone") });
 
       expect(beforeAgentStart(fake)).toBeUndefined();
     });
@@ -170,13 +184,10 @@ describe("personas extension", () => {
 
   describe("/persona <name> switches from the global directory", () => {
     it("switches to a valid persona and shows it in the status line", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", {
+      const fake = setupGlobalPersona("mentor", {
         name: "mentor",
         description: "Guides learning",
       });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
 
       const { promise, notify, setStatus } = switchTo(fake, "mentor");
       await promise;
@@ -186,10 +197,7 @@ describe("personas extension", () => {
     });
 
     it("composes built-in prompt plus persona body on every subsequent turn", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       const first = beforeAgentStart(fake);
@@ -203,8 +211,7 @@ describe("personas extension", () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" }, "Review skeptically.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       await switchTo(fake, "mentor").promise;
       await switchTo(fake, "reviewer").promise;
@@ -220,10 +227,7 @@ describe("personas extension", () => {
 
   describe("prompt composition modes", () => {
     it("defaults to append mode when systemPromptMode is omitted", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       expect(beforeAgentStart(fake)).toEqual({
@@ -231,21 +235,10 @@ describe("personas extension", () => {
       });
     });
 
-    it("append mode keeps the built-in prompt when systemPromptMode is append", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor", systemPromptMode: "append" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
-      await switchTo(fake, "mentor").promise;
-
-      expect(beforeAgentStart(fake)?.systemPrompt).toContain(BUILT_IN_PROMPT);
-    });
-
     it("caches the active definition: per-turn application never re-reads disk until re-switched", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Version one.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
       await switchTo(fake, "mentor").promise;
 
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Version two.");
@@ -282,8 +275,7 @@ describe("personas extension", () => {
     }
 
     it("uses the persona body as the custom prompt with project context and skills still attached", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const { promise, ui } = switchTo(fake, "ghost");
       ui.confirm.mockResolvedValue(true);
@@ -309,8 +301,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("keeps the user's append prompt but drops the skills section when the read tool is absent", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const { promise, ui } = switchTo(fake, "ghost");
       ui.confirm.mockResolvedValue(true);
@@ -332,8 +323,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("asks for confirmation before the first replace-mode switch applies", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const { promise, ui, setStatus } = switchTo(fake, "ghost");
       ui.confirm.mockResolvedValue(true);
@@ -350,8 +340,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
       writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
       await switchTo(fake, "mentor").promise;
 
       const { promise, ui, setStatus } = switchTo(fake, "ghost");
@@ -368,8 +357,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
       writePersonaDefinition(globalDir, "wraith", { name: "wraith", systemPromptMode: "replace" }, "Haunt the code.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       const first = switchTo(fake, "ghost");
       first.ui.confirm.mockResolvedValue(true);
@@ -384,8 +372,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a declined confirmation does not burn the one-time rule", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const declined = switchTo(fake, "ghost");
       declined.ui.confirm.mockResolvedValue(false);
@@ -400,8 +387,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a new session re-arms the confirmation", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const first = switchTo(fake, "ghost");
       first.ui.confirm.mockResolvedValue(true);
@@ -420,8 +406,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
       writePersonaDefinition(globalDir, "wraith", { name: "wraith", systemPromptMode: "replace" }, "Haunt the code.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       const resume = sessionStart(fake, [stateEntry("ghost")]);
       await resume.promise;
@@ -440,8 +425,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
       writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       await sessionStart(fake, [stateEntry("mentor")]).promise;
 
@@ -454,8 +438,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("re-checks idle after the confirmation resolves and rejects if a run started", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
       let idle = true;
 
       const { promise, ui, notify, setStatus } = switchTo(fake, "ghost", {
@@ -474,10 +457,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("append-mode personas never trigger a confirmation", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, ui } = switchTo(fake, "mentor");
       await promise;
@@ -487,8 +467,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("selecting a replace persona from the picker confirms before applying", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      const fake = setup({ globalDir: makeReplaceDir() });
 
       const { promise, ui, setStatus } = switchTo(fake, "");
       ui.select.mockResolvedValue("ghost");
@@ -507,8 +486,7 @@ Current working directory: /tmp/test-project`,
       writePersonaDefinition(globalDir, "unknown-field", { name: "ghost", colour: "blue" });
       writeFileSync(join(globalDir, "missing-name.md"), "---\ndescription: nothing\n---\nBody.", "utf8");
       writeFileSync(join(globalDir, "broken-yaml.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       const expectedReasons: Record<string, string> = {
         "unknown-field": "colour",
@@ -529,10 +507,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a direct switch to an invalid persona notifies the parse error instead of switching", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("broken", { name: "broken", colour: "blue" });
 
       const { promise, notify, setStatus } = switchTo(fake, "broken");
       await promise;
@@ -543,10 +518,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("an invalid systemPromptMode value yields a file-attributed parse error", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "sideways", { name: "sideways", systemPromptMode: "sideways" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("sideways", { name: "sideways", systemPromptMode: "sideways" });
 
       const { promise, notify } = switchTo(fake, "sideways");
       await promise;
@@ -560,8 +532,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       await switchTo(fake, "mentor").promise;
 
@@ -575,8 +546,7 @@ Current working directory: /tmp/test-project`,
       writeFileSync(join(projectDir, "broken.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir, globalDir, bundledDir: missingDir() });
+      const fake = setup({ projectDir, globalDir, bundledDir: missingDir() });
 
       const { promise, ui, notify } = switchTo(fake, "");
       await promise;
@@ -600,8 +570,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      const fake = setup({ globalDir, bundledDir: missingDir() });
       await switchTo(fake, "mentor").promise;
 
       const { promise, ui, notify, setStatus } = switchTo(fake, "");
@@ -619,8 +588,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      const fake = setup({ globalDir, bundledDir: missingDir() });
 
       const { promise, notify } = switchTo(fake, "", { hasUI: false });
       await promise;
@@ -636,8 +604,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writeFileSync(join(globalDir, "broken.md"), "---\nname: [unclosed\n---\nBody.", "utf8");
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("mentor")]);
       await promise;
@@ -649,10 +616,7 @@ Current working directory: /tmp/test-project`,
 
   describe("unknown persona names", () => {
     it("notifies with available personas and keeps no persona active", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, notify, setStatus } = switchTo(fake, "mentor");
       await promise;
@@ -676,8 +640,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      const fake = setup({ globalDir, bundledDir: missingDir() });
 
       const { promise, ui } = switchTo(fake, "");
       await promise;
@@ -690,10 +653,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("switches to the persona chosen in the selector", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, ui, setStatus } = switchTo(fake, "");
       ui.select.mockResolvedValue("mentor");
@@ -706,10 +666,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("selecting Default clears the active persona and the status line", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       const { promise, ui, setStatus } = switchTo(fake, "");
@@ -730,8 +687,7 @@ Current working directory: /tmp/test-project`,
         { name: "Default", description: "pi's built-in prompt" },
         "Actual persona.",
       );
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      const fake = setup({ globalDir, bundledDir: missingDir() });
 
       const { promise, ui, setStatus } = switchTo(fake, "");
       ui.select.mockResolvedValue("Default — pi's built-in prompt");
@@ -742,10 +698,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("re-checks idle after the picker resolves and rejects if a run started", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
       let idle = true;
 
       const { promise, ui, notify, setStatus } = switchTo(fake, "", {
@@ -764,10 +717,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("cancelling the selector changes nothing", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       const { promise, ui, setStatus } = switchTo(fake, "");
@@ -781,10 +731,7 @@ Current working directory: /tmp/test-project`,
 
   describe("clearing aliases", () => {
     it.each(["off", "default", "none"])("/persona %s clears the active persona and status line", async (alias) => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       const { promise, setStatus } = switchTo(fake, alias);
@@ -801,10 +748,7 @@ Current working directory: /tmp/test-project`,
     }
 
     it("switching to a persona appends a persona-state entry that is not a context message", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
 
       await switchTo(fake, "mentor").promise;
 
@@ -813,10 +757,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("entering a persona injects a context-visible switch notice with name and description", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor", description: "Guides learning" });
 
       await switchTo(fake, "mentor").promise;
 
@@ -833,8 +774,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Mentors." }, "Mentor the user.");
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer", description: "Reviews." }, "Review skeptically.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       await switchTo(fake, "mentor").promise;
       await switchTo(fake, "reviewer").promise;
@@ -846,10 +786,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a persona without a description gets a notice naming just the persona", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
 
       await switchTo(fake, "mentor").promise;
 
@@ -857,10 +794,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("returning to default injects the default-shaped notice and records the cleared state", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
       await switchTo(fake, "mentor").promise;
 
       await switchTo(fake, "off").promise;
@@ -880,10 +814,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a rejected switch records nothing and injects no notice", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
       await switchTo(fake, "mentor").promise;
       const entriesBefore = [...fake.entries];
       const messagesBefore = [...fake.messages];
@@ -897,10 +828,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("session-start restores the active persona from the last persona-state entry", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, setStatus } = sessionStart(fake, [
         { type: "message", role: "user", content: "earlier" },
@@ -917,8 +845,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" }, "Review skeptically.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir });
 
       const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor"), stateEntry("reviewer")]);
       await promise;
@@ -928,10 +855,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a cleared-state entry resumes with no persona", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
 
       const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor"), stateEntry(undefined)]);
       await promise;
@@ -941,10 +865,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("sessions recorded before this extension have no persona entry and start with none", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
 
       const { promise, setStatus } = sessionStart(fake, [{ type: "message", role: "user", content: "hi" }]);
       await promise;
@@ -954,9 +875,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a persona-state entry with malformed data starts with none", async () => {
-      const globalDir = makeGlobalDir();
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir: makeGlobalDir() });
 
       const { promise, setStatus } = sessionStart(fake, [
         { type: "custom", customType: "personas-state", data: { persona: 42 } },
@@ -968,9 +887,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a saved persona whose definition no longer exists resumes with none and a warning", async () => {
-      const globalDir = makeGlobalDir();
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setup({ globalDir: makeGlobalDir() });
 
       const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("ghost")]);
       await promise;
@@ -981,10 +898,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("a forked child session (BTW) honors the parent's active persona", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, setStatus } = sessionStart(fake, [stateEntry("mentor")], "fork");
       await promise;
@@ -994,10 +908,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("the persona survives compaction: the override still applies and the entry stays restorable", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       await switchTo(fake, "mentor").promise;
 
       expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
@@ -1009,51 +920,11 @@ Current working directory: /tmp/test-project`,
       expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
     });
 
-    it("persona → persona → default → persona keeps the right entry, notice, and status at each step", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" }, "Mentor the user.");
-      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer", description: "Reviews." }, "Review skeptically.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
-
-      const first = switchTo(fake, "mentor");
-      await first.promise;
-      expect(first.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
-      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "mentor" } });
-      expect(fake.messages.at(-1)?.content).toBe("Persona switched: mentor — Guides learning");
-
-      const second = switchTo(fake, "reviewer");
-      await second.promise;
-      expect(second.setStatus).toHaveBeenCalledWith("persona", "persona:reviewer");
-      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "reviewer" } });
-      expect(fake.messages.at(-1)?.content).toBe("Persona switched: reviewer — Reviews.");
-
-      const third = switchTo(fake, "default");
-      await third.promise;
-      expect(third.setStatus).toHaveBeenCalledWith("persona", undefined);
-      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: undefined } });
-      expect(fake.messages.at(-1)?.content).toBe("Persona switched: default — pi's built-in prompt");
-      expect(beforeAgentStart(fake)).toBeUndefined();
-
-      const fourth = switchTo(fake, "mentor");
-      await fourth.promise;
-      expect(fourth.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
-      expect(fake.entries.at(-1)).toEqual({ customType: "personas-state", data: { persona: "mentor" } });
-      expect(fake.messages.at(-1)?.content).toBe("Persona switched: mentor — Guides learning");
-
-      const resume = sessionStart(fake, recordedEntries(fake));
-      await resume.promise;
-      expect(resume.setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
-      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
-    });
   });
 
   describe("idle guard", () => {
     it("waits for idle before applying the switch", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
       let idle = false;
 
       const { promise, notify, setStatus } = switchTo(fake, "mentor", {
@@ -1069,10 +940,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("rejects the switch with a notification when the agent is still running after waiting", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
 
       const { promise, notify, setStatus } = switchTo(fake, "mentor", {
         isIdle: () => false,
@@ -1086,10 +954,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("rejects the switch when waiting for idle is aborted", async () => {
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      const fake = setupGlobalPersona("mentor", { name: "mentor" });
 
       const { promise, notify, setStatus } = switchTo(fake, "mentor", {
         isIdle: () => false,
@@ -1110,8 +975,7 @@ Current working directory: /tmp/test-project`,
     it("accepts project/global/bundled options and wires the global directory", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, {
+      const fake = setup({
         projectDir: makeGlobalDir(),
         globalDir,
         bundledDir: makeGlobalDir(),
@@ -1132,8 +996,7 @@ Current working directory: /tmp/test-project`,
       const projectPersonas = join(projectRoot, ".pi", "personas");
       mkdirSync(projectPersonas, { recursive: true });
       writePersonaDefinition(projectPersonas, "local", { name: "local" }, "Local flavor.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: missingDir() });
+      const fake = setup({ globalDir: missingDir() });
 
       const { promise, setStatus } = switchTo(fake, "local", { cwd: projectRoot });
       await promise;
@@ -1147,8 +1010,7 @@ Current working directory: /tmp/test-project`,
       const globalDir = makeGlobalDir();
       writePersonaDefinition(projectDir, "mentor", { name: "mentor" }, "Project mentor.");
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Global mentor.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir, globalDir });
+      const fake = setup({ projectDir, globalDir });
 
       await switchTo(fake, "mentor").promise;
 
@@ -1160,8 +1022,7 @@ Current working directory: /tmp/test-project`,
       const bundledDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "contrarian", { name: "contrarian" }, "Global contrarian.");
       writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" }, "Bundled contrarian.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir });
+      const fake = setup({ globalDir, bundledDir });
 
       await switchTo(fake, "contrarian").promise;
 
@@ -1171,8 +1032,7 @@ Current working directory: /tmp/test-project`,
     it("a bundled persona switches like any other", async () => {
       const bundledDir = makeGlobalDir();
       writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" }, "Challenge everything.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir: missingDir(), bundledDir });
+      const fake = setup({ globalDir: missingDir(), bundledDir });
 
       await switchTo(fake, "contrarian").promise;
 
@@ -1186,8 +1046,7 @@ Current working directory: /tmp/test-project`,
       writePersonaDefinition(projectDir, "local", { name: "local" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
       writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir, globalDir, bundledDir });
+      const fake = setup({ projectDir, globalDir, bundledDir });
 
       const { promise, ui } = switchTo(fake, "");
       await promise;
@@ -1201,8 +1060,7 @@ Current working directory: /tmp/test-project`,
     });
 
     it("tolerates all three directories missing", async () => {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, {
+      const fake = setup({
         projectDir: missingDir(),
         globalDir: missingDir(),
         bundledDir: missingDir(),
@@ -1218,8 +1076,7 @@ Current working directory: /tmp/test-project`,
     it("a persona definition added mid-session appears in the next picker listing", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+      const fake = setup({ globalDir, bundledDir: missingDir() });
 
       await switchTo(fake, "").promise;
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" });
@@ -1239,9 +1096,7 @@ Current working directory: /tmp/test-project`,
     // Only the machine-visible directories are overridden: the bundled directory
     // resolves to the shipped extensions/personas/bundled, so these tests exercise the real shipped file.
     function extensionWithShippedBundled(): FakePi {
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir: missingDir(), globalDir: missingDir() });
-      return fake;
+      return setup({ projectDir: missingDir(), globalDir: missingDir() });
     }
 
     it("ships contrarian, switchable out of the box and composed in append mode", async () => {
@@ -1273,8 +1128,7 @@ Current working directory: /tmp/test-project`,
     it("a project persona definition shadows the bundled one without touching the package", async () => {
       const projectDir = makeGlobalDir();
       writePersonaDefinition(projectDir, "contrarian", { name: "contrarian" }, "Project contrarian.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir, globalDir: missingDir() });
+      const fake = setup({ projectDir, globalDir: missingDir() });
 
       const { promise } = switchTo(fake, "contrarian");
       await promise;

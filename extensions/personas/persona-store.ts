@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { parsePersonaDefinition, type PersonaDefinition } from "./persona-definition-parser.js";
@@ -7,18 +7,10 @@ import { parsePersonaDefinition, type PersonaDefinition } from "./persona-defini
 export const DEFAULT_GLOBAL_PERSONAS_DIR = join(homedir(), ".pi", "agent", "personas");
 export const DEFAULT_BUNDLED_PERSONAS_DIR = join(dirname(fileURLToPath(import.meta.url)), "bundled");
 
-export interface LoadedPersona {
-  ok: true;
-  persona: PersonaDefinition;
-}
-
 export interface FailedPersona {
-  ok: false;
   fileName: string;
   error: string;
 }
-
-export type DirectoryPersona = LoadedPersona | FailedPersona;
 
 export interface PersonaDirectories {
   /** Project persona directory (.pi/personas under the project root). Defaults to a directory resolved from the session cwd. */
@@ -29,35 +21,28 @@ export interface PersonaDirectories {
   bundledDir?: string;
 }
 
-export function isFailedPersona(entry: DirectoryPersona): entry is FailedPersona {
-  return !entry.ok;
-}
-
-export function personaFileNameStem(fileName: string): string {
-  return basename(fileName, ".md");
-}
-
 /** Missing directories are tolerated and yield no personas. */
-export function loadPersonasFromDirectory(dir: string): DirectoryPersona[] {
-  if (!existsSync(dir)) return [];
+export function loadPersonasFromDirectory(
+  dir: string,
+): { valid: PersonaDefinition[]; failed: FailedPersona[] } {
+  if (!existsSync(dir)) return { valid: [], failed: [] };
 
-  const entries: DirectoryPersona[] = [];
+  const valid: PersonaDefinition[] = [];
+  const failed: FailedPersona[] = [];
   const fileNames = readdirSync(dir)
     .filter((name) => name.endsWith(".md"))
     .sort();
   for (const fileName of fileNames) {
     try {
-      const content = readFileSync(join(dir, fileName), "utf8");
-      entries.push({ ok: true, persona: parsePersonaDefinition(content) });
+      valid.push(parsePersonaDefinition(readFileSync(join(dir, fileName), "utf8")));
     } catch (e) {
-      entries.push({
-        ok: false,
+      failed.push({
         fileName,
         error: e instanceof Error ? e.message : String(e),
       });
     }
   }
-  return entries;
+  return { valid, failed };
 }
 
 export function projectPersonasDir(cwd: string): string {
@@ -79,13 +64,11 @@ export function resolvePersonas(options: PersonaDirectories, cwd: string): Resol
   const byName = new Map<string, PersonaDefinition>();
   const failed: FailedPersona[] = [];
   for (const dir of directories) {
-    for (const entry of loadPersonasFromDirectory(dir)) {
-      if (isFailedPersona(entry)) {
-        failed.push(entry);
-      } else if (!byName.has(entry.persona.name)) {
-        byName.set(entry.persona.name, entry.persona);
-      }
+    const loaded = loadPersonasFromDirectory(dir);
+    for (const persona of loaded.valid) {
+      if (!byName.has(persona.name)) byName.set(persona.name, persona);
     }
+    failed.push(...loaded.failed);
   }
   return { validPersonas: [...byName.values()], failedPersonas: failed };
 }

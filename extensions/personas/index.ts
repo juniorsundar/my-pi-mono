@@ -5,10 +5,10 @@ import {
   type ExtensionAPI,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { basename } from "node:path";
 import type { PersonaDefinition } from "./persona-definition-parser.js";
 import {
   resolvePersonas,
-  personaFileNameStem,
   type FailedPersona,
   type PersonaDirectories,
 } from "./persona-store.js";
@@ -145,7 +145,7 @@ export default function personasExtension(
         return;
       }
 
-      const failedMatch = failedPersonas.find((entry) => personaFileNameStem(entry.fileName) === input);
+      const failedMatch = failedPersonas.find((entry) => basename(entry.fileName, ".md") === input);
       if (failedMatch) {
         ctx.ui.notify(parseErrorMessage(failedMatch), "warning");
         return;
