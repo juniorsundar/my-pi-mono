@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  formatSkillsForPrompt,
+  type BeforeAgentStartEvent,
+  type BuildSystemPromptOptions,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import type { PersonaDefinition } from "./persona-definition-parser.js";
 import {
   resolvePersonas,
@@ -24,19 +30,20 @@ export default function personasExtension(
   // Active persona: zero or one. The definition is snapshotted at switch time
   // so per-turn prompt application never touches the disk.
   let activePersona: PersonaDefinition | undefined;
+  // Session-scoped: a replace-mode switch is confirmed at most once per session,
+  // re-armed by session_start unless the session restores a replace persona.
+  let replaceModeConfirmed = false;
 
-  function composeSystemPrompt(builtInPrompt: string, persona: PersonaDefinition): string {
-    return persona.body ? `${builtInPrompt}\n\n${persona.body}` : builtInPrompt;
-  }
-
-  function switchToPersona(persona: PersonaDefinition, ctx: ExtensionCommandContext): void {
-    // Replace-mode switching ships with its confirmation flow in ticket 0063.
-    if (persona.systemPromptMode === "replace") {
-      ctx.ui.notify(
-        `Persona "${persona.name}" uses replace mode, which is not supported yet.`,
-        "warning",
+  async function switchToPersona(persona: PersonaDefinition, ctx: ExtensionCommandContext): Promise<void> {
+    if (persona.systemPromptMode === "replace" && !replaceModeConfirmed) {
+      const confirmed = await ctx.ui.confirm(
+        "Replace pi's built-in prompt?",
+        `Switching to "${persona.name}" replaces pi's built-in prompt — its tool guidance is lost. Project context and skills stay attached.`,
       );
-      return;
+      // A run may have started while the dialog was open; the confirmation is
+      // not spent unless the switch actually applies.
+      if (!confirmed || !(await ensureIdle(ctx))) return;
+      replaceModeConfirmed = true;
     }
     activePersona = persona;
     pi.appendEntry(PERSONA_STATE_CUSTOM_TYPE, { persona: persona.name });
@@ -105,7 +112,7 @@ export default function personasExtension(
       clearActivePersona(ctx);
       return;
     }
-    switchToPersona(valid[index], ctx);
+    await switchToPersona(valid[index], ctx);
   }
 
   pi.registerCommand("persona", {
@@ -128,7 +135,7 @@ export default function personasExtension(
 
       const match = validPersonas.find((persona) => persona.name === input);
       if (match) {
-        switchToPersona(match, ctx);
+        await switchToPersona(match, ctx);
         return;
       }
 
@@ -149,6 +156,7 @@ export default function personasExtension(
   // Restoring must not re-emit the switch notice — it is already part of the
   // restored session context from the original switch.
   pi.on("session_start", async (_event, ctx) => {
+    replaceModeConfirmed = false;
     const stateEntry = ctx.sessionManager
       .getEntries()
       .filter(
@@ -164,6 +172,9 @@ export default function personasExtension(
       const persona = validPersonas.find((candidate) => candidate.name === savedName);
       if (persona) {
         activePersona = persona;
+        // The session already established this persona, so replace mode is
+        // considered confirmed for the resumed session.
+        if (persona.systemPromptMode === "replace") replaceModeConfirmed = true;
         ctx.ui.setStatus(PERSONA_STATUS_KEY, `persona:${persona.name}`);
         return;
       }
@@ -178,8 +189,40 @@ export default function personasExtension(
 
   pi.on("before_agent_start", (event) => {
     if (!activePersona) return undefined;
-    return { systemPrompt: composeSystemPrompt(event.systemPrompt, activePersona) };
+    return { systemPrompt: composeSystemPrompt(event, activePersona) };
   });
+}
+
+function appendModePrompt(builtInPrompt: string, persona: PersonaDefinition): string {
+  return persona.body ? `${builtInPrompt}\n\n${persona.body}` : builtInPrompt;
+}
+
+// Mirrors pi's custom-prompt composition: the persona body stands in for the
+// built-in prompt while the append prompt, project context, skills, and cwd still attach.
+function replaceModePrompt(body: string, options: BuildSystemPromptOptions): string {
+  let prompt = body;
+  if (options.appendSystemPrompt) prompt += `\n\n${options.appendSystemPrompt}`;
+  const contextFiles = options.contextFiles ?? [];
+  if (contextFiles.length > 0) {
+    prompt += "\n\n<project_context>\n\n";
+    prompt += "Project-specific instructions and guidelines:\n\n";
+    for (const { path, content } of contextFiles) {
+      prompt += `<project_instructions path="${path}">\n${content}\n</project_instructions>\n\n`;
+    }
+    prompt += "</project_context>\n";
+  }
+  const skills = options.skills ?? [];
+  if ((!options.selectedTools || options.selectedTools.includes("read")) && skills.length > 0) {
+    prompt += formatSkillsForPrompt(skills);
+  }
+  return `${prompt}\nCurrent working directory: ${options.cwd.replace(/\\/g, "/")}`;
+}
+
+function composeSystemPrompt(event: BeforeAgentStartEvent, persona: PersonaDefinition): string {
+  if (persona.systemPromptMode === "replace") {
+    return replaceModePrompt(persona.body, event.systemPromptOptions);
+  }
+  return appendModePrompt(event.systemPrompt, persona);
 }
 
 function personaLabel(persona: PersonaDefinition): string {

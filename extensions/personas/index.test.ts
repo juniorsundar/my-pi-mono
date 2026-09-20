@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import personasExtension from "./index.js";
 
 // ── Fake extension API ───────────────────────────────────────────────
@@ -121,6 +122,22 @@ function switchTo(fake: FakePi, args: string, overrides: Record<string, unknown>
   return { promise, ui, notify, setStatus };
 }
 
+function stateEntry(persona: string | undefined) {
+  return { type: "custom", customType: "personas-state", data: { persona } };
+}
+
+function sessionStart(
+  fake: FakePi,
+  entries: unknown[],
+  reason: "startup" | "reload" | "new" | "resume" | "fork" = "resume",
+) {
+  const { ctx, ui, notify, setStatus } = createContext({
+    sessionManager: { getEntries: () => entries, getSessionFile: () => "/tmp/session.jsonl" },
+  });
+  const [handler] = getHandlers(fake, "session_start");
+  return { promise: handler({ type: "session_start", reason }, ctx), ui, notify, setStatus };
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     try {
@@ -224,23 +241,6 @@ describe("personas extension", () => {
       expect(beforeAgentStart(fake)?.systemPrompt).toContain(BUILT_IN_PROMPT);
     });
 
-    it("replace-mode personas are not switchable in this slice", async () => {
-      // Ticket 0063 adds replace-mode switching together with its confirmation.
-      const globalDir = makeGlobalDir();
-      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
-
-      const { promise, notify, setStatus } = switchTo(fake, "ghost");
-      await promise;
-
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("replace"), "warning");
-      expect(setStatus).not.toHaveBeenCalled();
-      expect(fake.entries).toHaveLength(0);
-      expect(fake.messages).toHaveLength(0);
-      expect(beforeAgentStart(fake)).toBeUndefined();
-    });
-
     it("caches the active definition: per-turn application never re-reads disk until re-switched", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Version one.");
@@ -253,6 +253,251 @@ describe("personas extension", () => {
 
       await switchTo(fake, "mentor").promise;
       expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nVersion two.` });
+    });
+  });
+
+  describe("replace mode", () => {
+    const CONTEXT_FILE = { path: "/tmp/test-project/AGENTS.md", content: "Project context body." };
+    const SKILL = { name: "implement", description: "Implement tickets.", filePath: "/skills/implement/SKILL.md" };
+    const REPLACE_OPTIONS = {
+      cwd: "/tmp/test-project",
+      selectedTools: ["read", "bash", "edit", "write"],
+      contextFiles: [CONTEXT_FILE],
+      skills: [SKILL],
+    };
+
+    // Simulates pi's fully assembled prompt: built-in core plus attached context and skills.
+    function replaceModeEvent(overrides: Record<string, unknown> = {}) {
+      return {
+        systemPrompt: `${BUILT_IN_PROMPT}\n\n<project_context>\n\n${CONTEXT_FILE.content}\n</project_context>\n`,
+        systemPromptOptions: REPLACE_OPTIONS,
+        ...overrides,
+      };
+    }
+
+    function makeReplaceDir(): string {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
+      return globalDir;
+    }
+
+    it("uses the persona body as the custom prompt with project context and skills still attached", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const { promise, ui } = switchTo(fake, "ghost");
+      ui.confirm.mockResolvedValue(true);
+      await promise;
+
+      const prompt = (beforeAgentStart(fake, replaceModeEvent()) as { systemPrompt: string }).systemPrompt;
+      expect(prompt).toBe(
+        `Be a ghost.
+
+<project_context>
+
+Project-specific instructions and guidelines:
+
+<project_instructions path="${CONTEXT_FILE.path}">
+${CONTEXT_FILE.content}
+</project_instructions>
+
+</project_context>
+${formatSkillsForPrompt([SKILL])}
+Current working directory: /tmp/test-project`,
+      );
+      expect(prompt).not.toContain(BUILT_IN_PROMPT);
+    });
+
+    it("keeps the user's append prompt but drops the skills section when the read tool is absent", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const { promise, ui } = switchTo(fake, "ghost");
+      ui.confirm.mockResolvedValue(true);
+      await promise;
+
+      const event = replaceModeEvent({
+        systemPromptOptions: {
+          cwd: "/tmp/test-project",
+          selectedTools: ["bash"],
+          appendSystemPrompt: "User append.",
+          skills: [SKILL],
+        },
+      });
+      const prompt = (beforeAgentStart(fake, event) as { systemPrompt: string }).systemPrompt;
+      expect(prompt).toBe(
+        "Be a ghost.\n\nUser append.\nCurrent working directory: /tmp/test-project",
+      );
+      expect(prompt).not.toContain("<available_skills>");
+    });
+
+    it("asks for confirmation before the first replace-mode switch applies", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const { promise, ui, setStatus } = switchTo(fake, "ghost");
+      ui.confirm.mockResolvedValue(true);
+      await promise;
+
+      expect(ui.confirm).toHaveBeenCalledTimes(1);
+      expect(ui.confirm.mock.calls[0][1]).toContain("built-in");
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:ghost");
+      expect(fake.entries).toEqual([{ customType: "personas-state", data: { persona: "ghost" } }]);
+      expect(fake.messages.at(-1)?.content).toBe("Persona switched: ghost");
+    });
+
+    it("declining the confirmation leaves the active persona unchanged", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      const { promise, ui, setStatus } = switchTo(fake, "ghost");
+      ui.confirm.mockResolvedValue(false);
+      await promise;
+
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(fake.entries).toEqual([{ customType: "personas-state", data: { persona: "mentor" } }]);
+      expect(fake.messages).toHaveLength(1);
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+    });
+
+    it("confirming once means later replace-mode switches in the same session do not re-confirm", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
+      writePersonaDefinition(globalDir, "wraith", { name: "wraith", systemPromptMode: "replace" }, "Haunt the code.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const first = switchTo(fake, "ghost");
+      first.ui.confirm.mockResolvedValue(true);
+      await first.promise;
+      const second = switchTo(fake, "wraith");
+      await second.promise;
+
+      expect(first.ui.confirm).toHaveBeenCalledTimes(1);
+      expect(second.ui.confirm).not.toHaveBeenCalled();
+      expect(second.setStatus).toHaveBeenCalledWith("persona", "persona:wraith");
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Haunt the code.");
+    });
+
+    it("a declined confirmation does not burn the one-time rule", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const declined = switchTo(fake, "ghost");
+      declined.ui.confirm.mockResolvedValue(false);
+      await declined.promise;
+
+      const retried = switchTo(fake, "ghost");
+      retried.ui.confirm.mockResolvedValue(true);
+      await retried.promise;
+
+      expect(retried.ui.confirm).toHaveBeenCalledTimes(1);
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Be a ghost.");
+    });
+
+    it("a new session re-arms the confirmation", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const first = switchTo(fake, "ghost");
+      first.ui.confirm.mockResolvedValue(true);
+      await first.promise;
+
+      await sessionStart(fake, [], "new").promise;
+
+      const again = switchTo(fake, "ghost");
+      await again.promise;
+
+      expect(first.ui.confirm).toHaveBeenCalledTimes(1);
+      expect(again.ui.confirm).toHaveBeenCalledTimes(1);
+    });
+
+    it("restoring a replace-mode persona on resume does not re-confirm, and later switches stay confirmation-free", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
+      writePersonaDefinition(globalDir, "wraith", { name: "wraith", systemPromptMode: "replace" }, "Haunt the code.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const resume = sessionStart(fake, [stateEntry("ghost")]);
+      await resume.promise;
+
+      expect(resume.ui.confirm).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Be a ghost.");
+
+      const later = switchTo(fake, "wraith");
+      await later.promise;
+
+      expect(later.ui.confirm).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Haunt the code.");
+    });
+
+    it("resuming a session that never established replace mode still confirms a fresh replace-mode switch", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "ghost", { name: "ghost", systemPromptMode: "replace" }, "Be a ghost.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      await sessionStart(fake, [stateEntry("mentor")]).promise;
+
+      const fresh = switchTo(fake, "ghost");
+      fresh.ui.confirm.mockResolvedValue(true);
+      await fresh.promise;
+
+      expect(fresh.ui.confirm).toHaveBeenCalledTimes(1);
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Be a ghost.");
+    });
+
+    it("re-checks idle after the confirmation resolves and rejects if a run started", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+      let idle = true;
+
+      const { promise, ui, notify, setStatus } = switchTo(fake, "ghost", {
+        isIdle: () => idle,
+        waitForIdle: async () => {},
+      });
+      ui.confirm.mockImplementation(async () => {
+        idle = false;
+        return true;
+      });
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected"), "warning");
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake, replaceModeEvent())).toBeUndefined();
+    });
+
+    it("append-mode personas never trigger a confirmation", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, ui } = switchTo(fake, "mentor");
+      await promise;
+
+      expect(ui.confirm).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+    });
+
+    it("selecting a replace persona from the picker confirms before applying", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: makeReplaceDir() });
+
+      const { promise, ui, setStatus } = switchTo(fake, "");
+      ui.select.mockResolvedValue("ghost");
+      ui.confirm.mockResolvedValue(true);
+      await promise;
+
+      expect(ui.confirm).toHaveBeenCalledTimes(1);
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:ghost");
+      expect(beforeAgentStart(fake, replaceModeEvent()).systemPrompt).toContain("Be a ghost.");
     });
   });
 
@@ -477,24 +722,6 @@ describe("personas extension", () => {
   });
 
   describe("session persistence and switch notices", () => {
-    const stateEntry = (persona: string | undefined) => ({
-      type: "custom",
-      customType: "personas-state",
-      data: { persona },
-    });
-
-    function sessionStart(
-      fake: FakePi,
-      entries: unknown[],
-      reason: "startup" | "reload" | "new" | "resume" | "fork" = "resume",
-    ) {
-      const { ctx, notify, setStatus } = createContext({
-        sessionManager: { getEntries: () => entries, getSessionFile: () => "/tmp/session.jsonl" },
-      });
-      const [handler] = getHandlers(fake, "session_start");
-      return { promise: handler({ type: "session_start", reason }, ctx), notify, setStatus };
-    }
-
     function recordedEntries(fake: FakePi): unknown[] {
       return fake.entries.map((entry, index) => ({ type: "custom", id: `e${index}`, ...entry }));
     }

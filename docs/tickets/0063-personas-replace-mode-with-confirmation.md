@@ -12,13 +12,13 @@ Support the full-takeover **Prompt mode**. A persona definition with `systemProm
 
 ### Acceptance criteria
 
-- [ ] A `replace` persona's per-turn prompt is its body as the custom prompt (project context and skills still attached, built-in prompt absent)
-- [ ] The first switch to a replace-mode persona in a session asks for confirmation; declining leaves the active persona unchanged
-- [ ] Confirming once means further replace-mode switches in the same session don't re-confirm
-- [ ] A new session re-arms the confirmation
-- [ ] Append-mode personas never trigger a confirmation
-- [ ] Restoring a replace-mode persona on resume does not re-confirm (session already established it), while a fresh switch within the session still honors the one-time rule
-- [ ] Composition, confirmation, and decline all verified through the extension entry point seam with a scripted confirm
+- [x] A `replace` persona's per-turn prompt is its body as the custom prompt (project context and skills still attached, built-in prompt absent)
+- [x] The first switch to a replace-mode persona in a session asks for confirmation; declining leaves the active persona unchanged
+- [x] Confirming once means further replace-mode switches in the same session don't re-confirm
+- [x] A new session re-arms the confirmation
+- [x] Append-mode personas never trigger a confirmation
+- [x] Restoring a replace-mode persona on resume does not re-confirm (session already established it), while a fresh switch within the session still honors the one-time rule
+- [x] Composition, confirmation, and decline all verified through the extension entry point seam with a scripted confirm
 
 ### Blocked by
 
