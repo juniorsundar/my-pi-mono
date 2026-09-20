@@ -8,8 +8,14 @@ import { parseAgentDefinitionFile } from "./agent-definition-parser.js";
 import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
+import { fileURLToPath } from "url";
 
 const DEFAULT_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents");
+const ORCHESTRATION_GUIDELINES_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "subagent-orchestration.md",
+);
 const modelContextWindowCache = new Map<string, number | undefined>();
 
 type CommandToken = {
@@ -340,11 +346,37 @@ function formatMetadataBlock(
   return lines.join("\n");
 }
 
+/** Load the subagent orchestration guidelines shipped with the extension. */
+function loadOrchestrationGuidelines(): string {
+  try {
+    return readFileSync(ORCHESTRATION_GUIDELINES_PATH, "utf-8").trim();
+  } catch {
+    // Missing or unreadable guidelines file — degrade gracefully
+    return "";
+  }
+}
+
 export default function subagentEntryPoint(
   pi: ExtensionAPI,
   options?: SubagentEntryPointOptions,
 ) {
   const agentsDir = options?.agentsDir ?? DEFAULT_AGENTS_DIR;
+
+  // Append the orchestration guidelines to the system prompt, so subagent
+  // delegation policy ships with the extension.
+  const orchestrationGuidelines = loadOrchestrationGuidelines();
+  if (orchestrationGuidelines) {
+    pi.on("before_agent_start", (event) => {
+      const options = event.systemPromptOptions as { sections?: Record<string, string> };
+      if (options.sections) {
+        options.sections["subagent-orchestration"] = orchestrationGuidelines;
+        return undefined;
+      }
+      return {
+        systemPrompt: `${event.systemPrompt}\n\n${orchestrationGuidelines}`,
+      };
+    });
+  }
 
   pi.registerTool({
     name: "subagent",

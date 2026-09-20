@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { fileURLToPath } from "url";
 import * as spawnerModule from "../src/spawner.js";
 import * as agentDefParserModule from "../src/agent-definition-parser.js";
 
@@ -2731,3 +2732,82 @@ describe("/subagent command — tool_call guardrail", () => {
     )).toBeUndefined();
   });
 });
+
+// ── System prompt injection (subagent-orchestration section) ──
+
+describe("subagent orchestration system prompt section", () => {
+  it("registers a before_agent_start handler that injects the guidelines section", () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+
+    const registration = pi.on.mock.calls.find(
+      (call: unknown[]) => call[0] === "before_agent_start",
+    );
+    expect(registration).toBeDefined();
+
+    const handler = registration![1] as (event: any) => void;
+    const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+    handler(event);
+
+    expect(event.systemPromptOptions.sections["subagent-orchestration"]).toContain(
+      "# Subagent Orchestration",
+    );
+    expect(event.systemPromptOptions.sections["subagent-orchestration"]).toContain(
+      "## Subagent Prompt Contract",
+    );
+  });
+
+  it("injected guidelines include delegation and risk control policy", () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+
+    const handler = pi.on.mock.calls
+      .find((call: unknown[]) => call[0] === "before_agent_start")![1] as (event: any) => void;
+    const sections: Record<string, string> = {};
+    handler({ systemPromptOptions: { sections } });
+
+    const guidelines = sections["subagent-orchestration"];
+    expect(guidelines).toContain("## Mandatory delegation");
+    expect(guidelines).toContain("## Risk Controls");
+    expect(guidelines.trim()).toBe(readFileSync(
+      join(extensionRootDir(), "subagent-orchestration.md"),
+      "utf-8",
+    ).trim());
+  });
+
+  it("modern path returns undefined and does not touch the rendered system prompt", () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+
+    const handler = pi.on.mock.calls
+      .find((call: unknown[]) => call[0] === "before_agent_start")![1] as (event: any) => unknown;
+
+    expect(handler({ systemPromptOptions: { sections: {} }, systemPrompt: "BASE" })).toBeUndefined();
+  });
+
+  it("legacy path (no sections support) appends guidelines to the returned system prompt", () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+
+    const handler = pi.on.mock.calls
+      .find((call: unknown[]) => call[0] === "before_agent_start")![1] as (event: any) => unknown;
+    const options = {} as Record<string, unknown>;
+    const result = handler({ systemPromptOptions: options, systemPrompt: "BASE" }) as {
+      systemPrompt: string;
+    };
+
+    expect(result.systemPrompt).toBe(
+      "BASE\n\n" + readFileSync(
+        join(extensionRootDir(), "subagent-orchestration.md"),
+        "utf-8",
+      ).trim(),
+    );
+    // Legacy pi ignores option mutations — the handler must not rely on them
+    expect(Object.keys(options)).toHaveLength(0);
+  });
+});
+
+function extensionRootDir(): string {
+  // test/ -> extension root (src/index.ts resolves ../subagent-orchestration.md)
+  return fileURLToPath(new URL("..", import.meta.url));
+}
