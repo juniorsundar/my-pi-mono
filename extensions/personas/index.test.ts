@@ -111,10 +111,10 @@ function beforeAgentStart(fake: FakePi, event: Partial<{ systemPrompt: string; p
   );
 }
 
-function switchTo(fake: FakePi, args: string) {
-  const { ctx, notify, setStatus } = createContext();
+function switchTo(fake: FakePi, args: string, overrides: Record<string, unknown> = {}) {
+  const { ctx, ui, notify, setStatus } = createContext(overrides);
   const promise = commandHandler(fake)(args, ctx);
-  return { promise, notify, setStatus };
+  return { promise, ui, notify, setStatus };
 }
 
 afterEach(() => {
@@ -343,21 +343,201 @@ describe("personas extension", () => {
   });
 
   describe("/persona with no arguments", () => {
-    it("lists available personas and broken definitions with their errors", async () => {
+    it("opens a selector listing every persona plus the Default entry", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
-      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" });
       const fake = createFakePi();
       personasExtension(fake.pi as any, { globalDir });
 
-      const { promise, notify } = switchTo(fake, "");
+      const { promise, ui } = switchTo(fake, "");
       await promise;
 
-      const listing = String(notify.mock.calls[0]?.[0]);
-      expect(listing).toContain("mentor");
-      expect(listing).toContain("Guides learning");
-      expect(listing).toContain("broken.md");
-      expect(listing).toContain("colour");
+      expect(ui.select).toHaveBeenCalledWith("Switch persona", [
+        "mentor — Guides learning",
+        "reviewer",
+        "Default — pi's built-in prompt",
+      ]);
+    });
+
+    it("surfaces broken definitions as warnings but leaves them out of the selector", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, ui, notify } = switchTo(fake, "");
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("colour"), "warning");
+      expect(ui.select).toHaveBeenCalledWith("Switch persona", [
+        "mentor",
+        "Default — pi's built-in prompt",
+      ]);
+    });
+
+    it("switches to the persona chosen in the selector", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, ui, setStatus } = switchTo(fake, "");
+      ui.select.mockResolvedValue("mentor");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(beforeAgentStart(fake)).toEqual({
+        systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.`,
+      });
+    });
+
+    it("selecting Default clears the active persona and the status line", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      const { promise, ui, setStatus } = switchTo(fake, "");
+      ui.select.mockResolvedValue("Default — pi's built-in prompt");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+      expect(fake.entries).toHaveLength(0);
+      expect(fake.messages).toHaveLength(0);
+    });
+
+    it("prefers a colliding persona label over the Default entry", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(
+        globalDir,
+        "default",
+        { name: "Default", description: "pi's built-in prompt" },
+        "Actual persona.",
+      );
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, ui, setStatus } = switchTo(fake, "");
+      ui.select.mockResolvedValue("Default — pi's built-in prompt");
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:Default");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nActual persona.` });
+    });
+
+    it("re-checks idle after the picker resolves and rejects if a run started", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      let idle = true;
+
+      const { promise, ui, notify, setStatus } = switchTo(fake, "", {
+        isIdle: () => idle,
+        waitForIdle: async () => {},
+      });
+      ui.select.mockImplementation(async () => {
+        idle = false;
+        return "mentor";
+      });
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected"), "warning");
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("cancelling the selector changes nothing", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      const { promise, ui, setStatus } = switchTo(fake, "");
+      ui.select.mockResolvedValue(undefined);
+      await promise;
+
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake).systemPrompt).toContain("Mentor the user.");
+    });
+  });
+
+  describe("clearing aliases", () => {
+    it.each(["off", "default", "none"])("/persona %s clears the active persona and status line", async (alias) => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      await switchTo(fake, "mentor").promise;
+
+      const { promise, setStatus } = switchTo(fake, alias);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+  });
+
+  describe("idle guard", () => {
+    it("waits for idle before applying the switch", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+      let idle = false;
+
+      const { promise, notify, setStatus } = switchTo(fake, "mentor", {
+        isIdle: () => idle,
+        waitForIdle: async () => {
+          idle = true;
+        },
+      });
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(notify).not.toHaveBeenCalledWith(expect.stringContaining("rejected"), "warning");
+    });
+
+    it("rejects the switch with a notification when the agent is still running after waiting", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, notify, setStatus } = switchTo(fake, "mentor", {
+        isIdle: () => false,
+        waitForIdle: async () => {},
+      });
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected"), "warning");
+      expect(setStatus).not.toHaveBeenCalled();
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("rejects the switch when waiting for idle is aborted", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir });
+
+      const { promise, notify, setStatus } = switchTo(fake, "mentor", {
+        isIdle: () => false,
+        waitForIdle: async () => {
+          const abortError = new Error("aborted");
+          abortError.name = "AbortError";
+          throw abortError;
+        },
+      });
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("rejected"), "warning");
+      expect(setStatus).not.toHaveBeenCalled();
     });
   });
 

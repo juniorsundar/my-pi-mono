@@ -12,13 +12,13 @@ The complete `persona` command UX. With no arguments, `/persona` opens a selecto
 
 ### Acceptance criteria
 
-- [ ] `/persona` with no args opens a selector containing every resolvable persona (name + description) and the "Default — pi's built-in prompt" entry
-- [ ] Selecting a persona switches to it; selecting Default clears the active persona and clears the status line
-- [ ] `/persona off`, `/persona default`, and `/persona none` all clear the active persona
-- [ ] `/persona <unknown>` notifies the user and lists available persona names
-- [ ] Invoking the command while the agent is mid-run does not change the active persona; the user is told the switch was rejected
-- [ ] Switching to default leaves subsequent turns on pi's built-in prompt, history untouched
-- [ ] All behavior verified through the extension entry point seam with a scripted selector
+- [x] `/persona` with no args opens a selector containing every resolvable persona (name + description) and the "Default — pi's built-in prompt" entry
+- [x] Selecting a persona switches to it; selecting Default clears the active persona and clears the status line
+- [x] `/persona off`, `/persona default`, and `/persona none` all clear the active persona
+- [x] `/persona <unknown>` notifies the user and lists available persona names
+- [x] Invoking the command while the agent is mid-run does not change the active persona; the user is told the switch was rejected
+- [x] Switching to default leaves subsequent turns on pi's built-in prompt, history untouched
+- [x] All behavior verified through the extension entry point seam with a scripted selector
 
 ### Blocked by
 
