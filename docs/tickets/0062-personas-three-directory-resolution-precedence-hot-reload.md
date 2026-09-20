@@ -12,13 +12,13 @@ Full **Persona definition** discovery. Definitions resolve from the **Project pe
 
 ### Acceptance criteria
 
-- [ ] Personas are discovered from all three directories and listed in the picker
-- [ ] A same-named project persona shadows the global one; a same-named global persona shadows the bundled one; each shadowing is observable in the composed prompt actually applied
-- [ ] Editing a persona definition file mid-session applies on the next switch to it (hot reload); no restart required
-- [ ] Per-turn system prompt application never re-reads definitions from disk (composed prompt cached while active)
-- [ ] Missing directories (any of the three) are tolerated silently
-- [ ] The project persona directory resolves relative to the session's working directory
-- [ ] Precedence and hot reload verified through the extension entry point seam with injected temp directories
+- [x] Personas are discovered from all three directories and listed in the picker
+- [x] A same-named project persona shadows the global one; a same-named global persona shadows the bundled one; each shadowing is observable in the composed prompt actually applied
+- [x] Editing a persona definition file mid-session applies on the next switch to it (hot reload); no restart required
+- [x] Per-turn system prompt application never re-reads definitions from disk (composed prompt cached while active)
+- [x] Missing directories (any of the three) are tolerated silently
+- [x] The project persona directory resolves relative to the session's working directory
+- [x] Precedence and hot reload verified through the extension entry point seam with injected temp directories
 
 ### Blocked by
 

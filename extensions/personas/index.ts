@@ -1,10 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { PersonaDefinition } from "./persona-definition-parser.js";
 import {
-  DEFAULT_GLOBAL_PERSONAS_DIR,
-  isFailedPersona,
-  isValidPersona,
-  loadPersonasFromDirectory,
+  resolvePersonas,
   personaFileNameStem,
   type FailedPersona,
   type PersonaDirectories,
@@ -27,8 +24,6 @@ export default function personasExtension(
   // Active persona: zero or one. The definition is snapshotted at switch time
   // so per-turn prompt application never touches the disk.
   let activePersona: PersonaDefinition | undefined;
-
-  const globalDir = options.globalDir ?? DEFAULT_GLOBAL_PERSONAS_DIR;
 
   function composeSystemPrompt(builtInPrompt: string, persona: PersonaDefinition): string {
     return persona.body ? `${builtInPrompt}\n\n${persona.body}` : builtInPrompt;
@@ -119,9 +114,7 @@ export default function personasExtension(
       if (!(await ensureIdle(ctx))) return;
 
       const input = args.trim();
-      const loaded = loadPersonasFromDirectory(globalDir);
-      const valid = loaded.filter(isValidPersona).map((entry) => entry.persona);
-      const failed = loaded.filter(isFailedPersona);
+      const { validPersonas, failedPersonas } = resolvePersonas(options, ctx.cwd);
 
       if (DEFAULT_ALIASES.has(input.toLowerCase())) {
         clearActivePersona(ctx);
@@ -129,17 +122,17 @@ export default function personasExtension(
       }
 
       if (!input) {
-        await openPicker(valid, failed, ctx);
+        await openPicker(validPersonas, failedPersonas, ctx);
         return;
       }
 
-      const match = valid.find((persona) => persona.name === input);
+      const match = validPersonas.find((persona) => persona.name === input);
       if (match) {
         switchToPersona(match, ctx);
         return;
       }
 
-      const failedMatch = failed.find((entry) => personaFileNameStem(entry.fileName) === input);
+      const failedMatch = failedPersonas.find((entry) => personaFileNameStem(entry.fileName) === input);
       if (failedMatch) {
         ctx.ui.notify(
           `Persona definition ${failedMatch.fileName} failed to parse: ${failedMatch.error}`,
@@ -148,7 +141,7 @@ export default function personasExtension(
         return;
       }
 
-      const available = valid.map((persona) => persona.name).join(", ");
+      const available = validPersonas.map((persona) => persona.name).join(", ");
       ctx.ui.notify(`Unknown persona "${input}". Available: ${available || "(none)"}`, "warning");
     },
   });
@@ -167,10 +160,8 @@ export default function personasExtension(
 
     const savedName = stateEntry?.data?.persona;
     if (typeof savedName === "string") {
-      const persona = loadPersonasFromDirectory(globalDir)
-        .filter(isValidPersona)
-        .map((entry) => entry.persona)
-        .find((candidate) => candidate.name === savedName);
+      const { validPersonas } = resolvePersonas(options, ctx.cwd);
+      const persona = validPersonas.find((candidate) => candidate.name === savedName);
       if (persona) {
         activePersona = persona;
         ctx.ui.setStatus(PERSONA_STATUS_KEY, `persona:${persona.name}`);

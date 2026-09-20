@@ -101,6 +101,10 @@ function makeGlobalDir(): string {
   return makeTempDir("personas-global-");
 }
 
+function missingDir(): string {
+  return join(makeTempDir("personas-missing-"), "gone");
+}
+
 const BUILT_IN_PROMPT = "You are pi, a coding agent.";
 
 function beforeAgentStart(fake: FakePi, event: Partial<{ systemPrompt: string; prompt: string }> = {}) {
@@ -337,7 +341,7 @@ describe("personas extension", () => {
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", description: "Guides learning" });
       writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" });
       const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
 
       const { promise, ui } = switchTo(fake, "");
       await promise;
@@ -354,7 +358,7 @@ describe("personas extension", () => {
       writePersonaDefinition(globalDir, "broken", { name: "broken", colour: "blue" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
       const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
 
       const { promise, ui, notify } = switchTo(fake, "");
       await promise;
@@ -408,7 +412,7 @@ describe("personas extension", () => {
         "Actual persona.",
       );
       const fake = createFakePi();
-      personasExtension(fake.pi as any, { globalDir });
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
 
       const { promise, ui, setStatus } = switchTo(fake, "");
       ui.select.mockResolvedValue("Default — pi's built-in prompt");
@@ -819,19 +823,114 @@ describe("personas extension", () => {
       });
     });
 
-    it("project personas are not wired in this slice", async () => {
-      // Ticket 0062 wires the project persona directory; this pins the slice boundary.
-      const projectDir = makeGlobalDir();
-      mkdirSync(join(projectDir, "personas"), { recursive: true });
-      writePersonaDefinition(join(projectDir, "personas"), "local", { name: "local" });
-      const fake = createFakePi();
-      personasExtension(fake.pi as any, { projectDir });
+  });
 
-      const { promise, notify } = switchTo(fake, "local");
+  describe("three-directory resolution, precedence, and hot reload", () => {
+    it("resolves the project persona directory relative to the session working directory", async () => {
+      const projectRoot = makeTempDir("personas-project-");
+      const projectPersonas = join(projectRoot, ".pi", "personas");
+      mkdirSync(projectPersonas, { recursive: true });
+      writePersonaDefinition(projectPersonas, "local", { name: "local" }, "Local flavor.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: missingDir() });
+
+      const { promise, setStatus } = switchTo(fake, "local", { cwd: projectRoot });
       await promise;
 
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("local"), "warning");
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:local");
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nLocal flavor.` });
+    });
+
+    it("a project persona shadows the same-named global persona", async () => {
+      const projectDir = makeGlobalDir();
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(projectDir, "mentor", { name: "mentor" }, "Project mentor.");
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Global mentor.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { projectDir, globalDir });
+
+      await switchTo(fake, "mentor").promise;
+
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nProject mentor.` });
+    });
+
+    it("a global persona shadows the same-named bundled persona", async () => {
+      const globalDir = makeGlobalDir();
+      const bundledDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "contrarian", { name: "contrarian" }, "Global contrarian.");
+      writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" }, "Bundled contrarian.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir, bundledDir });
+
+      await switchTo(fake, "contrarian").promise;
+
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nGlobal contrarian.` });
+    });
+
+    it("a bundled persona switches like any other", async () => {
+      const bundledDir = makeGlobalDir();
+      writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" }, "Challenge everything.");
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir: missingDir(), bundledDir });
+
+      await switchTo(fake, "contrarian").promise;
+
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nChallenge everything.` });
+    });
+
+    it("lists personas from all three directories in the picker", async () => {
+      const projectDir = makeGlobalDir();
+      const globalDir = makeGlobalDir();
+      const bundledDir = makeGlobalDir();
+      writePersonaDefinition(projectDir, "local", { name: "local" });
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      writePersonaDefinition(bundledDir, "contrarian", { name: "contrarian" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { projectDir, globalDir, bundledDir });
+
+      const { promise, ui } = switchTo(fake, "");
+      await promise;
+
+      expect(ui.select).toHaveBeenCalledWith("Switch persona", [
+        "local",
+        "mentor",
+        "contrarian",
+        "Default — pi's built-in prompt",
+      ]);
+    });
+
+    it("tolerates all three directories missing", async () => {
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, {
+        projectDir: missingDir(),
+        globalDir: missingDir(),
+        bundledDir: missingDir(),
+      });
+
+      const { promise, ui } = switchTo(fake, "");
+      await promise;
+
+      expect(ui.select).toHaveBeenCalledWith("Switch persona", ["Default — pi's built-in prompt"]);
       expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+
+    it("a persona definition added mid-session appears in the next picker listing", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" });
+      const fake = createFakePi();
+      personasExtension(fake.pi as any, { globalDir, bundledDir: missingDir() });
+
+      await switchTo(fake, "").promise;
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" });
+
+      const { promise, ui } = switchTo(fake, "");
+      await promise;
+
+      expect(ui.select).toHaveBeenLastCalledWith("Switch persona", [
+        "mentor",
+        "reviewer",
+        "Default — pi's built-in prompt",
+      ]);
     });
   });
 });

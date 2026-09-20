@@ -1,9 +1,11 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { parsePersonaDefinition, type PersonaDefinition } from "./persona-definition-parser.js";
 
 export const DEFAULT_GLOBAL_PERSONAS_DIR = join(homedir(), ".pi", "agent", "personas");
+export const DEFAULT_BUNDLED_PERSONAS_DIR = join(dirname(fileURLToPath(import.meta.url)), "bundled");
 
 export interface LoadedPersona {
   ok: true;
@@ -19,16 +21,12 @@ export interface FailedPersona {
 export type DirectoryPersona = LoadedPersona | FailedPersona;
 
 export interface PersonaDirectories {
-  /** Project persona directory (.pi/personas under the project root). Wired by ticket 0062. */
+  /** Project persona directory (.pi/personas under the project root). Defaults to a directory resolved from the session cwd. */
   projectDir?: string;
   /** Global persona directory (~/.pi/agent/personas). */
   globalDir?: string;
-  /** Bundled personas shipped inside the extension package. Wired by ticket 0062. */
+  /** Bundled personas shipped inside the extension package. */
   bundledDir?: string;
-}
-
-export function isValidPersona(entry: DirectoryPersona): entry is LoadedPersona {
-  return entry.ok;
 }
 
 export function isFailedPersona(entry: DirectoryPersona): entry is FailedPersona {
@@ -60,4 +58,34 @@ export function loadPersonasFromDirectory(dir: string): DirectoryPersona[] {
     }
   }
   return entries;
+}
+
+export function projectPersonasDir(cwd: string): string {
+  return join(cwd, ".pi", "personas");
+}
+
+export interface ResolvedPersonas {
+  validPersonas: PersonaDefinition[];
+  failedPersonas: FailedPersona[];
+}
+
+/** Directory precedence is project > global > bundled; the first valid definition for a persona name wins. */
+export function resolvePersonas(options: PersonaDirectories, cwd: string): ResolvedPersonas {
+  const directories = [
+    options.projectDir ?? projectPersonasDir(cwd),
+    options.globalDir ?? DEFAULT_GLOBAL_PERSONAS_DIR,
+    options.bundledDir ?? DEFAULT_BUNDLED_PERSONAS_DIR,
+  ];
+  const byName = new Map<string, PersonaDefinition>();
+  const failed: FailedPersona[] = [];
+  for (const dir of directories) {
+    for (const entry of loadPersonasFromDirectory(dir)) {
+      if (isFailedPersona(entry)) {
+        failed.push(entry);
+      } else if (!byName.has(entry.persona.name)) {
+        byName.set(entry.persona.name, entry.persona);
+      }
+    }
+  }
+  return { validPersonas: [...byName.values()], failedPersonas: failed };
 }
