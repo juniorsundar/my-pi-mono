@@ -14,7 +14,7 @@
  */
 
 import type { CompletedEntry } from "./registry.js";
-import { truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Component
@@ -277,8 +277,10 @@ export class BtwReviewComponent {
   }
 
   handleInput(data: string): void {
-    // Escape works regardless of entries state
-    if (data === "\x1b") {
+    // Escape works regardless of entries state.
+    // matchesKey covers legacy \x1b plus kitty (\x1b[27u) / modifyOtherKeys encodings,
+    // which the terminal may switch to after a focus change.
+    if (matchesKey(data, "escape")) {
       this.onClose();
       return;
     }

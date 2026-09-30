@@ -593,6 +593,15 @@ describe("Slice 5: Escape closes the review view", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("escape in kitty / modifyOtherKeys encoding calls onClose", () => {
+    for (const seq of ["\x1b[27u", "\x1b[27;1u", "\x1b[27;1;27~"]) {
+      const onClose = vi.fn();
+      const component = new BtwReviewComponent(makeEntries(1), createMockTui(), createMockTheme(), onClose);
+      component.handleInput(seq);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("escape on empty entries calls onClose", () => {
     const tui = createMockTui();
     const theme = createMockTheme();
