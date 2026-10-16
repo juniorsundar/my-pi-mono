@@ -284,6 +284,7 @@ function pendantProgressStep(
   return {
     agent,
     task,
+    label: task,
     status: "running",
     ...(model ? { model } : {}),
     ...(thinking ? { thinking } : {}),
@@ -512,7 +513,7 @@ export default function subagentEntryPoint(
             state: "failed",
             startedAt,
             endedAt: new Date().toISOString(),
-            progress: [{ agent, task, status: "failed", error: message }],
+            progress: [{ agent, task, label: task, status: "failed", error: message }],
           },
         };
       }

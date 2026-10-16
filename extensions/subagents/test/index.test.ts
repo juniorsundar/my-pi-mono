@@ -263,9 +263,10 @@ describe("subagents entry point", () => {
       return { output: "task completed successfully", agentId: "scout-abc123" };
     });
 
+    const task = "Find all TypeScript files. ".repeat(40);
     await toolCall.execute(
       "call-1",
-      { agent: "scout", task: "Find all TypeScript files", thinking: "high" },
+      { agent: "scout", task, thinking: "high" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -288,11 +289,12 @@ describe("subagents entry point", () => {
     expect(updatePayload.details.expanded.hiddenCount).toBe(0);
     expect(updatePayload.details).toMatchObject({
       agent: "scout",
-      task: "Find all TypeScript files",
+      task,
       state: "running",
       progress: [{
         agent: "scout",
-        task: "Find all TypeScript files",
+        task,
+        label: task,
         status: "running",
         thinking: "high",
         recentTools: ["Tool: read", "Tool: edit", "Tool: search"],
