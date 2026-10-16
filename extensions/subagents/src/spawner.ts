@@ -9,6 +9,7 @@ import type { ProgressEvent } from "./progress-event.js";
 import { processStream, type StreamResult } from "./stream-processor.js";
 import * as registry from "./process-registry.js";
 import { WorkspaceStore } from "./workspace-store.js";
+import { resolvePiExecutable } from "./pi-executable.js";
 import type { TaskWorkspace } from "./task-workspace.js";
 import type { Readable } from "stream";
 
@@ -41,6 +42,8 @@ export interface SpawnSubagentOptions {
 
 export interface SpawnSubagentResult {
   output: string;
+  /** Structured execution outcome for consumers that display run state. */
+  status?: "completed" | "failed";
   agentId: string;
   /** The agent type that was spawned (e.g. "scout", "worker"). */
   agentType: string;
@@ -153,6 +156,8 @@ export async function spawnSubagent(
   // 5. Build command args and env
   const { args, env } = buildCommand(definition, task, overrides);
 
+  const resolvedPiPath = resolvePiExecutable(piPathOverride);
+
   // 5a. Resolve model for metadata: overrides take precedence over definition
   const resolvedModel: string | undefined = overrides?.model ?? definition.model;
 
@@ -160,13 +165,10 @@ export async function spawnSubagent(
   const manifest = {
     agentId,
     taskDir: ws.directory,
-    command: ["pi", ...args],
+    command: [resolvedPiPath, ...args],
     env,
   };
   ws.writeManifest(manifest);
-
-  // 7. Determine pi path (default: find "pi" in PATH)
-  const resolvedPiPath = piPathOverride ?? "pi";
 
   // 8. Spawn pi directly (no shell wrapper)
   const child = spawn(resolvedPiPath, args, {
@@ -361,14 +363,19 @@ export async function spawnSubagent(
 
   // 13. Read output.md and return
   let output: string;
+  let outputReadFailed = false;
   try {
     output = ws.readOutput() ?? "";
   } catch {
+    outputReadFailed = true;
     output = `[ERROR] Subagent completed but no output.md was produced.`;
     ws.writeOutput(output);
   }
 
-  return { output, agentId, agentType, duration: Date.now() - startTime, model: resolvedModel, usage: latestUsage, activityFeed };
+  const status = timedOut || outputReadFailed || !completedStreamResult?.done
+    ? "failed"
+    : "completed";
+  return { output, status, agentId, agentType, duration: Date.now() - startTime, model: resolvedModel, usage: latestUsage, activityFeed };
 }
 
 /**

@@ -272,6 +272,27 @@ function scheduleDeferredInvalidate(context: any): void {
   });
 }
 
+function pendantProgressStep(
+  agent: string,
+  task: string,
+  feed?: ActivityFeedOutput,
+  model?: string,
+  thinking?: string,
+) {
+  const tools = feed?.expanded.lines.filter((line) => line.type === "tool") ?? [];
+  const currentTool = [...tools].reverse().find((line) => line.status === "started");
+  return {
+    agent,
+    task,
+    status: "running",
+    ...(model ? { model } : {}),
+    ...(thinking ? { thinking } : {}),
+    ...(currentTool?.toolName ? { currentTool: currentTool.toolName } : {}),
+    recentTools: tools.slice(-5).map((line) => line.toolName ?? line.text),
+    toolCount: tools.length,
+  };
+}
+
 function buildToolDescription(agentsDir: string): string {
   const agents = listAvailableAgents(agentsDir);
   if (agents.length === 0) {
@@ -385,11 +406,11 @@ export default function subagentEntryPoint(
     parameters: {
       type: "object",
       properties: {
-        agent_type: {
+        agent: {
           type: "string",
           description: "Type of subagent to spawn (scout, worker, etc.)",
         },
-        prompt: {
+        task: {
           type: "string",
           description: "Task or prompt for the subagent",
         },
@@ -402,21 +423,22 @@ export default function subagentEntryPoint(
           description: "Optional thinking level override for the subagent",
         },
       },
-      required: ["agent_type", "prompt"],
+      required: ["agent", "task"],
       additionalProperties: false,
     },
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const { agent_type, prompt, model, thinking } = params as {
-        agent_type: string;
-        prompt: string;
+      const { agent, task, model, thinking } = params as {
+        agent: string;
+        task: string;
         model?: string;
         thinking?: string;
       };
+      const startedAt = new Date().toISOString();
 
       try {
         const result = await spawnSubagent({
-          agentType: agent_type,
-          task: prompt,
+          agentType: agent,
+          task,
           agentsDir,
           workDir: ctx.cwd,
           signal,
@@ -424,8 +446,14 @@ export default function subagentEntryPoint(
             ? (feed) => {
                 try {
                   onUpdate({
-                    content: [{ type: "text" as const, text: feed.collapsed.text }],
-                    details: feed,
+                    content: [{ type: "text" as const, text: feed.collapsed.text || `Starting ${agent}…` }],
+                    details: {
+                      ...feed,
+                      agent,
+                      task,
+                      state: "running",
+                      progress: [pendantProgressStep(agent, task, feed, model, thinking)],
+                    },
                   });
                 } catch {
                   // Progress delivery is best-effort; ignore UI rendering errors
@@ -438,15 +466,38 @@ export default function subagentEntryPoint(
           },
         });
 
+        const failed = result.status === "failed";
+        const status = failed ? "failed" : "completed";
         return {
           content: [{ type: "text", text: result.output }],
           details: {
             agentId: result.agentId,
             agentType: result.agentType,
+            agent,
+            task,
             model: result.model,
             duration: result.duration,
             usage: result.usage,
             activityFeed: result.activityFeed,
+            runId: result.agentId,
+            state: status,
+            ...(failed ? { error: result.output } : {}),
+            startedAt,
+            endedAt: new Date().toISOString(),
+            progress: [{
+              childId: result.agentId,
+              ...pendantProgressStep(agent, task, result.activityFeed, result.model, thinking),
+              status,
+              ...(failed ? { error: result.output } : {}),
+            }],
+            results: [{
+              childId: result.agentId,
+              agent,
+              status,
+              model: result.model,
+              duration: result.duration,
+              ...(failed ? { error: result.output } : { finalOutput: result.output }),
+            }],
           },
         };
       } catch (err) {
@@ -454,7 +505,15 @@ export default function subagentEntryPoint(
           err instanceof Error ? err.message : String(err);
         return {
           content: [{ type: "text", text: message }],
-          details: { error: true },
+          details: {
+            error: message,
+            agent,
+            task,
+            state: "failed",
+            startedAt,
+            endedAt: new Date().toISOString(),
+            progress: [{ agent, task, status: "failed", error: message }],
+          },
         };
       }
     },
@@ -465,7 +524,7 @@ export default function subagentEntryPoint(
           ? context.lastComponent
           : new Text("", 0, 0);
 
-      const agentType = (args.agent_type as string) || "...";
+      const agentType = (args.agent as string) || "...";
       const model = resolveModel(agentType, args, agentsDir);
       const contextWindow = resolveModelContextWindow(model, agentsDir, context.cwd);
       const header = formatCallHeader(agentType, model, !!context.executionStarted, {
@@ -643,7 +702,7 @@ ${outputText}`);
         (thinking !== undefined ? `, thinking=${JSON.stringify(thinking)}` : "");
       const instruction =
         `Call the \`subagent\` tool now with exactly these params and nothing else: ` +
-        `agent_type=${JSON.stringify(agentType)}, prompt=${JSON.stringify(prompt)}` +
+        `agent=${JSON.stringify(agentType)}, task=${JSON.stringify(prompt)}` +
         overridesClause +
         `. Do not add commentary or call any other tool.`;
       const sessionId = ctx.sessionManager.getSessionId();

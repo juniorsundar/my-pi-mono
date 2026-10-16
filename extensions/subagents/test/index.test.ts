@@ -143,7 +143,7 @@ describe("subagents entry point", () => {
 
     await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "Find all TypeScript files" },
+      { agent: "scout", task: "Find all TypeScript files" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -173,10 +173,10 @@ describe("subagents entry point", () => {
 
     // ── Parameter schema ──
     const params = toolCall.parameters;
-    expect(params.properties.agent_type).toBeDefined();
-    expect(params.required).toContain("agent_type");
-    expect(params.properties.prompt).toBeDefined();
-    expect(params.required).toContain("prompt");
+    expect(params.properties.agent).toBeDefined();
+    expect(params.required).toContain("agent");
+    expect(params.properties.task).toBeDefined();
+    expect(params.required).toContain("task");
     expect(params.properties.model).toBeDefined();
     expect(params.required).not.toContain("model");
     expect(params.properties.thinking).toBeDefined();
@@ -195,8 +195,8 @@ describe("subagents entry point", () => {
     const result = await toolCall.execute(
       "call-1",
       {
-        agent_type: "scout",
-        prompt: "Find all TypeScript files",
+        agent: "scout",
+        task: "Find all TypeScript files",
         model: "anthropic/claude-sonnet",
         thinking: "high",
       },
@@ -265,7 +265,7 @@ describe("subagents entry point", () => {
 
     await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "Find all TypeScript files" },
+      { agent: "scout", task: "Find all TypeScript files", thinking: "high" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -286,6 +286,19 @@ describe("subagents entry point", () => {
     expect(updatePayload.details.expanded).toBeDefined();
     expect(updatePayload.details.collapsed.hiddenCount).toBe(3);
     expect(updatePayload.details.expanded.hiddenCount).toBe(0);
+    expect(updatePayload.details).toMatchObject({
+      agent: "scout",
+      task: "Find all TypeScript files",
+      state: "running",
+      progress: [{
+        agent: "scout",
+        task: "Find all TypeScript files",
+        status: "running",
+        thinking: "high",
+        recentTools: ["Tool: read", "Tool: edit", "Tool: search"],
+        toolCount: 3,
+      }],
+    });
   });
 
   it("full live update flow stores partial usage state and renderCall shows the new header values", async () => {
@@ -325,7 +338,7 @@ describe("subagents entry point", () => {
 
     await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "watch progress" },
+      { agent: "scout", task: "watch progress" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -334,11 +347,23 @@ describe("subagents entry point", () => {
     expect(mockOnUpdate).toHaveBeenCalledTimes(1);
     const partialResult = mockOnUpdate.mock.calls[0][0];
     expect(partialResult.content[0].text).toBe(sampleFeed.collapsed.text);
-    expect(partialResult.details).toBe(sampleFeed);
+    expect(partialResult.details).toMatchObject({
+      ...sampleFeed,
+      agent: "scout",
+      task: "watch progress",
+      state: "running",
+      progress: [{
+        agent: "scout",
+        task: "watch progress",
+        status: "running",
+        recentTools: ["Tool: read", "Tool: bash"],
+        toolCount: 2,
+      }],
+    });
 
     const invalidate = vi.fn();
     const context = {
-      args: { agent_type: "scout", prompt: "watch progress" },
+      args: { agent: "scout", task: "watch progress" },
       toolCallId: "tcid-live",
       invalidate,
       lastComponent: undefined,
@@ -397,7 +422,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "do stuff" },
+      { agent: "scout", task: "do stuff" },
       new AbortController().signal,
       throwingOnUpdate,
       { cwd: workDir },
@@ -438,7 +463,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "worker", prompt: "complex task" },
+      { agent: "worker", task: "complex task" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -478,7 +503,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "enriched test" },
+      { agent: "scout", task: "enriched test" },
       new AbortController().signal,
       vi.fn(),
       { cwd: workDir },
@@ -496,6 +521,26 @@ describe("subagents entry point", () => {
     // details has all enriched metadata
     expect(result.details.agentId).toBe("scout-enriched-1");
     expect(result.details.agentType).toBe("scout");
+    expect(result.details).toMatchObject({
+      runId: "scout-enriched-1",
+      state: "completed",
+      progress: [{
+        childId: "scout-enriched-1",
+        agent: "scout",
+        task: "enriched test",
+        status: "completed",
+        model: "minimax/MiniMax-M2.7",
+        toolCount: 0,
+      }],
+      results: [{
+        childId: "scout-enriched-1",
+        agent: "scout",
+        status: "completed",
+        model: "minimax/MiniMax-M2.7",
+        duration: 12345,
+        finalOutput: "subagent output here",
+      }],
+    });
     expect(result.details.model).toBe("minimax/MiniMax-M2.7");
     expect(result.details.duration).toBe(12345);
     expect(result.details.usage).toEqual({ input: 4200, output: 890, cacheRead: 512, cacheWrite: 0 });
@@ -552,7 +597,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "feed test" },
+      { agent: "scout", task: "feed test" },
       new AbortController().signal,
       vi.fn(),
       { cwd: workDir },
@@ -561,6 +606,14 @@ describe("subagents entry point", () => {
     // activityFeed is present in details and matches the spawn result
     expect(result.details.activityFeed).toBeDefined();
     expect(result.details.activityFeed).toEqual(sampleActivityFeed);
+    expect(result.details.progress[0]).toMatchObject({
+      childId: "scout-feed-1",
+      agent: "scout",
+      task: "feed test",
+      status: "completed",
+      recentTools: ["read: test.ts"],
+      toolCount: 1,
+    });
 
     // content still has only the clean output
     expect(result.content).toHaveLength(1);
@@ -588,12 +641,12 @@ describe("subagents entry point", () => {
         expanded: { text: "Trying...", hiddenCount: 0, lines: [] },
       });
       // Simulate the spawner returning an error output (not throwing)
-      return { output: '[ERROR] Subagent "planner" crashed.', agentId: "planner-err" };
+      return { output: '[ERROR] Subagent "planner" crashed.', status: "failed", agentId: "planner-err" };
     });
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "planner", prompt: "risky task" },
+      { agent: "planner", task: "risky task" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -605,8 +658,40 @@ describe("subagents entry point", () => {
     // LLM gets the error result, unchanged, with no progress mixed in
     expect(result.content[0].text).toBe('[ERROR] Subagent "planner" crashed.');
     expect(result.details.agentId).toBe("planner-err");
+    expect(result.details).toMatchObject({
+      state: "failed",
+      error: '[ERROR] Subagent "planner" crashed.',
+      progress: [{ agent: "planner", task: "risky task", status: "failed" }],
+      results: [{ agent: "planner", status: "failed", error: '[ERROR] Subagent "planner" crashed.' }],
+    });
     expect(result.details.collapsed).toBeUndefined();
     expect(result.details.expanded).toBeUndefined();
+  });
+
+  it("uses structured run status instead of inspecting output text", async () => {
+    const workDir = makeWorkDir();
+    const agentsDir = makeAgentsDir();
+    writeAgentDef(agentsDir, "scout");
+
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir });
+    const toolCall = pi.registerTool.mock.calls[0][0];
+    vi.spyOn(spawnerModule, "spawnSubagent").mockResolvedValueOnce({
+      output: "[ERROR] this is literal child output",
+      status: "completed",
+      agentId: "scout-literal-error-prefix",
+    });
+
+    const result = await toolCall.execute(
+      "call-1",
+      { agent: "scout", task: "return the literal prefix" },
+      new AbortController().signal,
+      vi.fn(),
+      { cwd: workDir },
+    );
+
+    expect(result.details.state).toBe("completed");
+    expect(result.details.results[0].finalOutput).toBe("[ERROR] this is literal child output");
   });
 
   // ── Slice 3.4: Progress works without tmux ──
@@ -634,7 +719,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "simple task" },
+      { agent: "scout", task: "simple task" },
       new AbortController().signal,
       mockOnUpdate,
       { cwd: workDir },
@@ -683,7 +768,7 @@ describe("subagents entry point", () => {
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "nonexistent", prompt: "do stuff" },
+      { agent: "nonexistent", task: "do stuff" },
       new AbortController().signal,
       () => {},
       { cwd: workDir },
@@ -695,6 +780,13 @@ describe("subagents entry point", () => {
     expect(msg).toContain("nonexistent");
     expect(msg).toContain("scout");
     expect(msg).toContain("planner");
+    expect(result.details).toMatchObject({
+      error: msg,
+      agent: "nonexistent",
+      task: "do stuff",
+      state: "failed",
+      progress: [{ agent: "nonexistent", task: "do stuff", status: "failed", error: msg }],
+    });
   });
 
   // ── Slice 4: Timeout → clear error message ──
@@ -712,12 +804,13 @@ describe("subagents entry point", () => {
     // spawnSubagent resolves with timeout error in output (does not reject)
     vi.spyOn(spawnerModule, "spawnSubagent").mockResolvedValueOnce({
       output: '[ERROR] Subagent "scout" timed out after 120s.',
+      status: "failed",
       agentId: "scout-timeout",
     });
 
     const result = await toolCall.execute(
       "call-1",
-      { agent_type: "scout", prompt: "slow task" },
+      { agent: "scout", task: "slow task" },
       new AbortController().signal,
       () => {},
       { cwd: workDir },
@@ -729,6 +822,11 @@ describe("subagents entry point", () => {
     expect(msg).toContain("[ERROR]");
     expect(msg).toContain("timed out");
     expect(msg).toContain("120s");
+    expect(result.details).toMatchObject({
+      state: "failed",
+      progress: [{ agent: "scout", task: "slow task", status: "failed", error: msg }],
+      results: [{ agent: "scout", status: "failed", error: msg }],
+    });
   });
 
   // ── Slice 1: buildToolDescription includes agent descriptions ──
@@ -947,7 +1045,7 @@ describe("renderCall — tool call header", () => {
 
     expect(toolDef.renderCall).toBeTypeOf("function");
 
-    const component = callRender(toolDef, { agent_type: "scout", prompt: "test" });
+    const component = callRender(toolDef, { agent: "scout", task: "test" });
 
     expect(component).toBeDefined();
     expect(typeof component.render).toBe("function");
@@ -959,7 +1057,7 @@ describe("renderCall — tool call header", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
 
-    const component = callRender(toolDef, { agent_type: "scout", prompt: "test" });
+    const component = callRender(toolDef, { agent: "scout", task: "test" });
 
     const lines = component.render(80);
     expect(lines[0]).toContain("BOLD(scout)");
@@ -970,7 +1068,7 @@ describe("renderCall — tool call header", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
 
-    const component = callRender(toolDef, { agent_type: "scout", prompt: "test" });
+    const component = callRender(toolDef, { agent: "scout", task: "test" });
 
     const lines = component.render(80);
     expect(lines).toHaveLength(2);
@@ -985,7 +1083,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       { executionStarted: false },
     );
 
@@ -1000,7 +1098,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       { executionStarted: true },
     );
 
@@ -1015,7 +1113,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       {
         executionStarted: true,
         state: {
@@ -1050,7 +1148,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       {
         executionStarted: true,
         state: {
@@ -1076,7 +1174,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       { cwd: "/test" },
     );
 
@@ -1096,7 +1194,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test", model: "anthropic/claude-sonnet" },
+      { agent: "scout", task: "test", model: "anthropic/claude-sonnet" },
       { cwd: "/test" },
     );
 
@@ -1117,7 +1215,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       { cwd: "/test" },
     );
 
@@ -1137,7 +1235,7 @@ describe("renderCall — tool call header", () => {
 
     const component = callRender(
       toolDef,
-      { agent_type: "nonexistent", prompt: "test" },
+      { agent: "nonexistent", task: "test" },
       { cwd: "/test" },
     );
 
@@ -1153,12 +1251,12 @@ describe("renderCall — tool call header", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
 
-    const first = callRender(toolDef, { agent_type: "scout", prompt: "test" });
+    const first = callRender(toolDef, { agent: "scout", task: "test" });
 
     // Second call with lastComponent set to the first component
     const second = callRender(
       toolDef,
-      { agent_type: "scout", prompt: "test" },
+      { agent: "scout", task: "test" },
       { lastComponent: first },
     );
 
@@ -1168,12 +1266,12 @@ describe("renderCall — tool call header", () => {
 
   // ── Defensive fallback ──────────────────────────────────────────────
 
-  it("renders '...' as agent type when agent_type is absent", () => {
+  it("renders '...' as agent type when agent is absent", () => {
     const pi = mockExtensionAPI();
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
 
-    const component = callRender(toolDef, { prompt: "test" }); // no agent_type
+    const component = callRender(toolDef, { task: "test" }); // no agent
 
     const lines = component.render(80);
     expect(lines[0]).toContain("BOLD(...)");
@@ -1195,7 +1293,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1267,7 +1365,7 @@ describe("renderResult — live partial update state", () => {
     const toolDef = extractToolDef(pi);
     const invalidate = vi.fn();
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate,
       lastComponent: undefined,
@@ -1318,7 +1416,7 @@ describe("renderResult — live partial update state", () => {
     const toolDef = extractToolDef(pi);
     const invalidate = vi.fn();
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate,
       lastComponent: undefined,
@@ -1351,7 +1449,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1410,7 +1508,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1470,7 +1568,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1514,7 +1612,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1557,7 +1655,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1646,7 +1744,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1717,7 +1815,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1795,7 +1893,7 @@ describe("renderResult — live partial update state", () => {
     subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
     const toolDef = extractToolDef(pi);
     const context = {
-      args: { agent_type: "scout", prompt: "test" },
+      args: { agent: "scout", task: "test" },
       toolCallId: "tcid-1",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -1857,7 +1955,7 @@ describe("renderResult — live partial update state", () => {
       const toolDef = extractToolDef(pi);
       const invalidate = vi.fn();
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -1931,7 +2029,7 @@ describe("renderResult — live partial update state", () => {
       subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
       const toolDef = extractToolDef(pi);
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate: vi.fn(),
         lastComponent: undefined,
@@ -2001,7 +2099,7 @@ describe("renderResult — live partial update state", () => {
       const toolDef = extractToolDef(pi);
       const invalidate = vi.fn();
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -2066,7 +2164,7 @@ describe("renderResult — live partial update state", () => {
       const toolDef = extractToolDef(pi);
       const invalidate = vi.fn();
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -2106,7 +2204,7 @@ describe("renderResult — live partial update state", () => {
       const toolDef = extractToolDef(pi);
       const invalidate = vi.fn();
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -2147,7 +2245,7 @@ describe("renderResult — live partial update state", () => {
       subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
       const toolDef = extractToolDef(pi);
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate: vi.fn(),
         lastComponent: undefined,
@@ -2208,7 +2306,7 @@ describe("renderResult — live partial update state", () => {
       const toolDef = extractToolDef(pi);
       const invalidate = vi.fn();
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -2269,7 +2367,7 @@ describe("renderResult — live partial update state", () => {
       const invalidate = vi.fn();
       const existingTimer = setInterval(() => {}, 80);
       const context = {
-        args: { agent_type: "scout", prompt: "test" },
+        args: { agent: "scout", task: "test" },
         toolCallId: "tcid-1",
         invalidate,
         lastComponent: undefined,
@@ -2501,7 +2599,7 @@ describe("/subagent command — agent-driven dispatch", () => {
 
     expect(pi.sendUserMessage).toHaveBeenCalledWith(
       "Call the `subagent` tool now with exactly these params and nothing else: " +
-        'agent_type="worker", prompt="refactor  the auth module", ' +
+        'agent="worker", task="refactor  the auth module", ' +
         'model="claude sonnet", thinking="high". ' +
         "Do not add commentary or call any other tool.",
       { deliverAs: "followUp" },
@@ -2518,7 +2616,7 @@ describe("/subagent command — agent-driven dispatch", () => {
 
     const [content] = pi.sendUserMessage.mock.calls[0];
     expect(content).toContain(
-      'agent_type="scout", prompt="explain --model behavior --thinking carefully"',
+      'agent="scout", task="explain --model behavior --thinking carefully"',
     );
     expect(content).not.toContain(', thinking="carefully"');
   });
@@ -2532,7 +2630,7 @@ describe("/subagent command — agent-driven dispatch", () => {
     await handler('worker "  keep edge spaces  "', ctx);
 
     expect(pi.sendUserMessage.mock.calls[0][0]).toContain(
-      'prompt="  keep edge spaces  "',
+      'task="  keep edge spaces  "',
     );
   });
 
@@ -2545,7 +2643,7 @@ describe("/subagent command — agent-driven dispatch", () => {
     await handler('worker task --model "" --thinking ""', ctx);
 
     expect(pi.sendUserMessage.mock.calls[0][0]).toContain(
-      'prompt="task", model="", thinking=""',
+      'task="task", model="", thinking=""',
     );
   });
 

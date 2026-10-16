@@ -208,7 +208,7 @@ exec tail -f /dev/null
 
     // Expanded final render — should show activity feed
     const expandedContext = {
-      args: { agent_type: "scout", prompt: "timeout E2E" },
+      args: { agent: "scout", task: "timeout E2E" },
       toolCallId: "tcid-timeout",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -265,7 +265,7 @@ exec tail -f /dev/null
 
     // Collapsed final render — should NOT show activity feed
     const collapsedContext = {
-      args: { agent_type: "scout", prompt: "timeout E2E" },
+      args: { agent: "scout", task: "timeout E2E" },
       toolCallId: "tcid-timeout-collapsed",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -392,7 +392,7 @@ exit 1
 
     // Expanded final render — should show activity feed
     const expandedContext = {
-      args: { agent_type: "scout", prompt: "crash E2E" },
+      args: { agent: "scout", task: "crash E2E" },
       toolCallId: "tcid-crash",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -434,7 +434,7 @@ exit 1
 
     // Collapsed final render — should NOT show activity feed
     const collapsedContext = {
-      args: { agent_type: "scout", prompt: "crash E2E" },
+      args: { agent: "scout", task: "crash E2E" },
       toolCallId: "tcid-crash-collapsed",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -569,7 +569,7 @@ exec tail -f /dev/null
 
     // Expanded final render — should show activity feed
     const expandedContext = {
-      args: { agent_type: "scout", prompt: "cancellation E2E" },
+      args: { agent: "scout", task: "cancellation E2E" },
       toolCallId: "tcid-cancel",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -611,7 +611,7 @@ exec tail -f /dev/null
 
     // Collapsed final render — should NOT show activity feed
     const collapsedContext = {
-      args: { agent_type: "scout", prompt: "cancellation E2E" },
+      args: { agent: "scout", task: "cancellation E2E" },
       toolCallId: "tcid-cancel-collapsed",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -715,7 +715,7 @@ exit 1
 
     // Expanded final render — no feed, should show metadata + output
     const expandedContext = {
-      args: { agent_type: "scout", prompt: "early crash" },
+      args: { agent: "scout", task: "early crash" },
       toolCallId: "tcid-early",
       invalidate: vi.fn(),
       lastComponent: undefined,
@@ -755,7 +755,7 @@ exit 1
 
     // Collapsed final render
     const collapsedContext = {
-      args: { agent_type: "scout", prompt: "early crash" },
+      args: { agent: "scout", task: "early crash" },
       toolCallId: "tcid-early-collapsed",
       invalidate: vi.fn(),
       lastComponent: undefined,

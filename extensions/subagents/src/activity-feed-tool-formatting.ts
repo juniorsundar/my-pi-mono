@@ -47,7 +47,7 @@ export function summarizeToolArgs(
   if (name === "web_search") return cleanDisplayText(stringValue(args.query) || "(no query)");
   if (name === "web_fetch") return cleanDisplayText(stringValue(args.url) || "(no url)");
   if (name === "subagent") {
-    const agentType = stringValue(args.agent_type) || stringValue(args.agentType) || "agent";
+    const agentType = stringValue(args.agent) || stringValue(args.agent_type) || stringValue(args.agentType) || "agent";
     const prompt = stringValue(args.prompt) || stringValue(args.task);
     return cleanDisplayText(prompt ? `${agentType} — ${prompt}` : agentType);
   }

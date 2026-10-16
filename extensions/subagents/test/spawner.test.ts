@@ -103,8 +103,9 @@ exit 0
       generateId: () => "scout-a3f1b2c3",
     });
 
-    // Returns correct agentId
+    // Returns correct agentId and structured outcome
     expect(result.agentId).toBe("scout-a3f1b2c3");
+    expect(result.status).toBe("completed");
 
     // Returns output from stream processor's final text
     expect(result.output.trim()).toBe("Hello from subagent.");
@@ -120,7 +121,7 @@ exit 0
     expect(manifest!.taskDir).toBe(join(workDir, ".pi", "subagents", "scout-a3f1b2c3"));
     expect(manifest!.command).toBeInstanceOf(Array);
     expect(manifest!.command.length).toBeGreaterThan(0);
-    expect(manifest!.command[0]).toBe("pi");
+    expect(manifest!.command[0]).toBe(piPath);
     expect(manifest!.command).toContain("-p");
     expect(manifest!.command[manifest!.command.indexOf("-p") + 1]).toBe("Find all TypeScript files");
     expect(manifest!.command).toContain("--system-prompt");
@@ -262,6 +263,7 @@ exec tail -f /dev/null
     expect(result.output).toContain("scout");
     expect(result.output).toContain("1s");
     expect(result.output).toContain("timed out");
+    expect(result.status).toBe("failed");
 
     // Should have timed out in roughly 1s
     const elapsed = Date.now() - startTime;

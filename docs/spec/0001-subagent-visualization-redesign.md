@@ -65,7 +65,7 @@ Redesign the activity feed with structured visual hierarchy: tool calls rendered
 
 - **Activity Feed Renderer extracted as new module**: All rendering logic (component building, spinner lifecycle, theme-sensitive formatting, header formatting, metadata block) moves from the tool registration entry point into a dedicated renderer module. The entry point retains only tool registration, execution wiring, and a thin delegation to the renderer.
 
-- **Tool parameter formatting lives in the renderer**: The `summarizeToolArgs` dispatch logic (per-tool arg formatting: bash→command, read→path, edit→path+edit count, subagent→agent_type+prompt, etc.) moves from the stream processor to the renderer. The stream processor passes raw args; the renderer formats them for display. This allows different formatting in different view contexts (collapsed vs expanded, narrow vs wide terminal).
+- **Tool parameter formatting lives in the renderer**: The `summarizeToolArgs` dispatch logic (per-tool arg formatting: bash→command, read→path, edit→path+edit count, subagent→agent+task, etc.) moves from the stream processor to the renderer. The stream processor passes raw args; the renderer formats them for display. This allows different formatting in different view contexts (collapsed vs expanded, narrow vs wide terminal).
 
 - **ActivityFeedLine gains the same optional fields**: `toolName`, `toolArgs`, and `toolResultPreview` flow through from `ProgressEvent` to `ActivityFeedLine`, giving the renderer structured data to work with.
 

@@ -1,24 +1,8 @@
-import { execSync } from "node:child_process";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { describe, it, expect, vi } from "vitest";
 
-vi.mock("@earendil-works/pi-tui", async () => {
-  const globalNodeModules = execSync("npm root -g", { encoding: "utf8" }).trim();
-  const piTuiModuleUrl = pathToFileURL(
-    join(
-      globalNodeModules,
-      "@earendil-works/pi-coding-agent",
-      "node_modules",
-      "@earendil-works",
-      "pi-tui",
-      "dist",
-      "index.js",
-    ),
-  ).href;
-
-  return await import(piTuiModuleUrl);
-});
+vi.mock("@earendil-works/pi-tui", async () =>
+  await vi.importActual("@earendil-works/pi-tui"),
+);
 
 import { renderActivityFeed } from "../src/activity-feed-renderer.js";
 
