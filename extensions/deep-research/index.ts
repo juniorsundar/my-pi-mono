@@ -5,7 +5,6 @@ import { join } from "path";
 import { homedir } from "os";
 import { loadDeepresearchConfig, type DeepResearchConfig } from "./config.js";
 import { ResearchStateManager } from "./state-manager.js";
-import { spawnSubagent } from "../subagents/index.js";
 import type { SpawnSubagentResult } from "../subagents/index.js";
 
 const DEEP_RESEARCH_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents", "deep-research");
@@ -13,6 +12,7 @@ const MAX_ITERATIONS = 10;
 // SUBAGENTS_DIR is resolved per-call from ctx.cwd in archiveLatestSubagentOutput
 
 export default function deepResearchExtension(pi: ExtensionAPI) {
+  let subagentsModule: Promise<typeof import("../subagents/index.js")> | undefined;
   
   // ── Tools ──────────────────────────────────────────────────────────
 
@@ -39,8 +39,9 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
       const { agent_type, prompt } = params as { agent_type: string; prompt: string };
       const config = loadDeepresearchConfig().config;
 
-      const doSpawn = () =>
-        spawnSubagent({
+      const doSpawn = async () => {
+        const { spawnSubagent } = await (subagentsModule ??= import("../subagents/index.js"));
+        return spawnSubagent({
           agentType: agent_type,
           task: prompt,
           agentsDir: DEEP_RESEARCH_AGENTS_DIR,
@@ -62,6 +63,7 @@ export default function deepResearchExtension(pi: ExtensionAPI) {
             ...(config.subagentModel ? { model: config.subagentModel } : {}),
           },
         });
+      };
 
       let result: SpawnSubagentResult;
       let wasRetried = false;
