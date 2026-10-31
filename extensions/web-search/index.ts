@@ -5,13 +5,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
 import { search as runSearchInternal, type SearchResponse } from "./src/search.js";
-import {
-	fetchUrl as fetchUrlInternal,
-	type FetchSuccess,
-	type FetchDownload,
-	type FetchErrorResult,
-} from "./src/fetch.js";
-import { writeContentArtifact, type OutputFormat } from "./src/representation.js";
+import type { FetchSuccess, FetchDownload, FetchErrorResult } from "./src/fetch.js";
+import type { OutputFormat } from "./src/representation.js";
 
 /** Loosened view over the fetchUrl() result union for formatting. */
 type FetchResponse = Partial<FetchSuccess & FetchDownload & FetchErrorResult>;
@@ -217,7 +212,9 @@ async function runFetch(
 	// In-process call to the TS port (final cut, #0009). Previously this
 	// shelled out to `uv run --project . python scripts/fetch.py`.
 	try {
-		return await fetchUrlInternal(params.url, {
+		// Keep the fetch/parser dependency graph out of extension startup.
+		const { fetchUrl } = await import("./src/fetch.js");
+		return await fetchUrl(params.url, {
 			// truncate() clamps maxChars to 1,000-100,000 internally
 			maxChars: params.maxChars,
 			format: params.format ?? "markdown",
@@ -233,7 +230,7 @@ async function runFetch(
 	}
 }
 
-function formatFetchResult(response: FetchResponse): string {
+async function formatFetchResult(response: FetchResponse): Promise<string> {
 	if (response.error) return `Fetch failed: ${response.error}`;
 
 	// Download mode: emit a short "saved to" notice instead of the full
@@ -295,6 +292,7 @@ function formatFetchResult(response: FetchResponse): string {
 			let artifactPath = response.contentArtifactPath ?? "";
 			if (!artifactPath) {
 				try {
+					const { writeContentArtifact } = await import("./src/representation.js");
 					artifactPath = writeContentArtifact(content, outputFormat);
 				} catch {
 					artifactPath = "";
@@ -409,7 +407,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 			}, signal);
 
 			return {
-				content: [{ type: "text", text: formatFetchResult(result) }],
+				content: [{ type: "text", text: await formatFetchResult(result) }],
 				details: {
 					url: params.url,
 					finalUrl: result.finalUrl,
@@ -481,7 +479,7 @@ export default function webSearchExtension(pi: ExtensionAPI) {
 
 			ctx.ui.notify(`Fetching: ${url}`, "info");
 			const result = await runFetch({ url, maxChars, format, download, raw }, ctx.signal);
-			const text = formatFetchResult(result);
+			const text = await formatFetchResult(result);
 
 			pi.sendMessage(
 				{
