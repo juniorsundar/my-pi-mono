@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
+import { loadSubagentsEnabled } from "./config.js";
 
 const DEFAULT_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents");
 const ORCHESTRATION_GUIDELINES_PATH = join(
@@ -142,6 +143,8 @@ function parseSubagentCommand(input: string): ParsedSubagentCommand | undefined 
 
 export interface SubagentEntryPointOptions {
   agentsDir?: string;
+  /** Override the `subagents.enabled` setting (tests). */
+  enabled?: boolean;
 }
 
 /** Resolve the model for a subagent call: args.model override > agent definition > undefined */
@@ -382,6 +385,9 @@ export default function subagentEntryPoint(
   pi: ExtensionAPI,
   options?: SubagentEntryPointOptions,
 ) {
+  // `subagents.enabled: false` in settings.json keeps the whole extension off.
+  if (!(options?.enabled ?? loadSubagentsEnabled())) return;
+
   const agentsDir = options?.agentsDir ?? DEFAULT_AGENTS_DIR;
 
   // Append the orchestration guidelines to the system prompt, so subagent

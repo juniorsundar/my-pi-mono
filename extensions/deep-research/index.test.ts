@@ -23,6 +23,10 @@ vi.mock("../subagents/index.js", () => ({
   spawnSubagent: mockSpawnSubagent,
 }));
 
+vi.mock("../subagents/src/config.js", () => ({
+  loadSubagentsEnabled: vi.fn(() => true),
+}));
+
 // typebox is not a direct project dependency — it comes from @earendil-works/pi-coding-agent.
 // Mock it so the module graph loads in test context. Proxy-based to handle any
 // Type.* method that production code may reference.
@@ -86,6 +90,14 @@ function createMockCtx(overrides = {}) {
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("tool registration", () => {
+  it("registers nothing when subagents are disabled", () => {
+    const pi = createMockPi();
+    deepResearchExtension(pi, { enabled: false });
+
+    expect(pi.registerTool).not.toHaveBeenCalled();
+    expect(pi.registerCommand).not.toHaveBeenCalled();
+  });
+
   it("registers spawn_research_subagent with r-plan in description and promptGuidelines", () => {
     const pi = createMockPi();
     deepResearchExtension(pi);

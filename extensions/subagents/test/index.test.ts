@@ -56,7 +56,12 @@ vi.mock("@earendil-works/pi-tui", () => {
 
 // ── Module import ──
 
+vi.mock("../src/config.js", () => ({
+  loadSubagentsEnabled: vi.fn(() => true),
+}));
+
 import subagentEntryPoint, { resolveModel, formatCallHeader } from "../src/index.js";
+import { loadSubagentsEnabled } from "../src/config.js";
 
 // ── Test helpers ──
 
@@ -123,6 +128,23 @@ afterEach(() => {
 });
 
 describe("subagents entry point", () => {
+  it("registers nothing when subagents are disabled", () => {
+    const pi = mockExtensionAPI();
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir(), enabled: false });
+
+    expect(pi.registerTool).not.toHaveBeenCalled();
+    expect(pi.registerCommand).not.toHaveBeenCalled();
+    expect(pi.on).not.toHaveBeenCalled();
+  });
+
+  it("follows the settings.json switch when no override is passed", () => {
+    const pi = mockExtensionAPI();
+    vi.mocked(loadSubagentsEnabled).mockReturnValueOnce(false);
+
+    subagentEntryPoint(pi as any, { agentsDir: makeAgentsDir() });
+
+    expect(pi.registerTool).not.toHaveBeenCalled();
+  });
   // ── Slice 1.1: Tracer Bullet — onUpdate forwarded to spawnSubagent ──
 
   it("forwards onUpdate callback to spawnSubagent as onProgress", async () => {

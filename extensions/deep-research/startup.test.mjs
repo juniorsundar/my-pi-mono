@@ -17,6 +17,7 @@ async function setup({ failImport = false } = {}) {
     path: { join: (...parts) => parts.join("/") },
     os: { homedir: () => "/isolated-home" },
     "./config.js": { loadDeepresearchConfig: () => ({ config: {} }) },
+    "../subagents/src/config.js": { loadSubagentsEnabled: () => true },
     "./state-manager.js": { ResearchStateManager: class {} },
     "../subagents/index.js": { spawnSubagent: async (options) => {
       calls.push(options);

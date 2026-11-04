@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { resolvePiExecutable } from "../src/pi-executable.js";
 
@@ -25,6 +25,25 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function makeNixStorePi(): { entryPoint: string; launcher: string } {
+  const store = makeTempDir();
+  const launcher = makeExecutable(store);
+  const entryPoint = join(
+    store,
+    "lib",
+    "pi",
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+    "bundle",
+    "cli.js",
+  );
+  mkdirSync(dirname(entryPoint), { recursive: true });
+  writeFileSync(entryPoint, "");
+  return { entryPoint, launcher };
+}
 
 describe("resolvePiExecutable", () => {
   it("prefers an executable found on PATH", () => {
@@ -59,6 +78,26 @@ describe("resolvePiExecutable", () => {
     expect(() => resolvePiExecutable(undefined, {
       PATH: makeTempDir(),
       PI_CODING_AGENT_DIR: agentDir,
-    })).toThrow(/Add pi to PATH or set PI_CODING_AGENT_DIR/);
+    }, join(makeTempDir(), "cli.js"))).toThrow(/Add pi to PATH/);
+  });
+
+  it("finds pi inside a Nix-store layout when PATH has no pi", () => {
+    const { entryPoint, launcher } = makeNixStorePi();
+
+    expect(resolvePiExecutable(undefined, {
+      PATH: makeTempDir(),
+      PI_CODING_AGENT_DIR: makeTempDir(),
+    }, entryPoint)).toBe(launcher);
+  });
+
+  it("finds pi through PI_PACKAGE_DIR for store installs", () => {
+    const { entryPoint, launcher } = makeNixStorePi();
+    const packageDir = join(dirname(entryPoint), "..", "..", "..", "..");
+
+    expect(resolvePiExecutable(undefined, {
+      PATH: makeTempDir(),
+      PI_CODING_AGENT_DIR: makeTempDir(),
+      PI_PACKAGE_DIR: packageDir,
+    }, join(makeTempDir(), "cli.js"))).toBe(launcher);
   });
 });

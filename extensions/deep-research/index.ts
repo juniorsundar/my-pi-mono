@@ -6,12 +6,21 @@ import { homedir } from "os";
 import { loadDeepresearchConfig, type DeepResearchConfig } from "./config.js";
 import { ResearchStateManager } from "./state-manager.js";
 import type { SpawnSubagentResult } from "../subagents/index.js";
+import { loadSubagentsEnabled } from "../subagents/src/config.js";
 
 const DEEP_RESEARCH_AGENTS_DIR = join(homedir(), ".pi", "agent", "agents", "deep-research");
 const MAX_ITERATIONS = 10;
 // SUBAGENTS_DIR is resolved per-call from ctx.cwd in archiveLatestSubagentOutput
 
-export default function deepResearchExtension(pi: ExtensionAPI) {
+export interface DeepResearchOptions {
+  /** Override the `subagents.enabled` setting (tests). */
+  enabled?: boolean;
+}
+
+export default function deepResearchExtension(pi: ExtensionAPI, options?: DeepResearchOptions) {
+  // Deep research drives subagents, so it follows the subagents on/off switch.
+  if (!(options?.enabled ?? loadSubagentsEnabled())) return;
+
   let subagentsModule: Promise<typeof import("../subagents/index.js")> | undefined;
   
   // ── Tools ──────────────────────────────────────────────────────────

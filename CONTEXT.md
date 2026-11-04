@@ -200,6 +200,10 @@ _Avoid_: Reset point, context boundary
 The `deepresearch` key in `settings.json` specifying `orchestratorModel` and `subagentModel` (flat for v1).
 _Avoid_: Research config, DR config
 
+**Subagents Switch**:
+The `subagents.enabled` boolean in `settings.json`. When `false`, the subagents extension registers no tool, command, or guidelines, and deep research skips itself too because it drives subagents. Read at extension load, so a restart is needed after toggling.
+_Avoid_: Subagent toggle, delegation config
+
 **Research Plan**:
 An immutable decomposition of the research question into areas, initial search angles, and likely hard parts — written by r-plan on iteration 1 and never modified. Gaps and adaptations discovered mid-research go to `## Current Gaps` and `## Next Step` instead.
 _Avoid_: Research roadmap, research strategy, research blueprint
