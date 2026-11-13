@@ -91,53 +91,24 @@ You are a scout agent.`;
     expect(result.systemPromptBody).toBe("You are a scout agent.");
   });
 
-  it("rejects output as an unknown frontmatter key", () => {
+  it("ignores unknown frontmatter keys", () => {
     const input = `---
 name: test
-output: .pi/subagent-outputs/test.md
+enabled: true
+skills: false
+extensions: false
+model: some-model
 ---
 Body`;
 
-    expect(() => parseAgentDefinition(input)).toThrow(
-      /Unknown agent definition frontmatter key: output/i
-    );
-  });
+    const result = parseAgentDefinition(input);
 
-  it("rejects defaultProgress as an unknown frontmatter key", () => {
-    const input = `---
-name: test
-defaultProgress: true
----
-Body`;
-
-    expect(() => parseAgentDefinition(input)).toThrow(
-      /Unknown agent definition frontmatter key: defaultProgress/i
-    );
-  });
-
-  it("rejects unknown frontmatter keys with a descriptive error", () => {
-    const input = `---
-name: test
-customField: some-value
----
-Test body.`;
-
-    expect(() => parseAgentDefinition(input)).toThrow(
-      /Unknown agent definition frontmatter key: customField/i
-    );
-  });
-
-  it("rejects multiple unknown frontmatter keys", () => {
-    const input = `---
-name: test
-foo: 1
-bar: 2
----
-Body`;
-
-    expect(() => parseAgentDefinition(input)).toThrow(
-      /Unknown agent definition frontmatter key: (foo|bar)/i
-    );
+    expect(result.name).toBe("test");
+    expect(result.model).toBe("some-model");
+    expect(result.systemPromptBody).toBe("Body");
+    expect(result).not.toHaveProperty("enabled");
+    expect(result).not.toHaveProperty("skills");
+    expect(result).not.toHaveProperty("extensions");
   });
 
   it("parses an agent definition with no markdown body (empty system prompt)", () => {

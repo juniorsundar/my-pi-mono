@@ -39,30 +39,7 @@ export function parseAgentDefinition(markdownContent: string): AgentDefinition {
     throw new Error("Agent definition must include a non-empty 'name' field");
   }
 
-  const KNOWN_KEYS = new Set([
-    "name",
-    "description",
-    "model",
-    "tools",
-    "thinking",
-    "systemPromptMode",
-    "inheritProjectContext",
-    "inheritSkills",
-    "inheritExtensions",
-    "timeout",
-  ]);
-
-  const unknownKeys = Object.keys(frontmatter).filter(
-    (key) => !KNOWN_KEYS.has(key)
-  );
-  if (unknownKeys.length > 0) {
-    throw new Error(
-      `Unknown agent definition frontmatter key: ${unknownKeys[0]}. ` +
-        "Agent definitions accept only known fields. " +
-        "Check for typos — recognized fields are: " +
-        Array.from(KNOWN_KEYS).join(", ") + "."
-    );
-  }
+  // Unrecognised keys are ignored: other tools share these definition files.
 
   const toolsRaw = frontmatter.tools;
   let tools: string[] | undefined;
