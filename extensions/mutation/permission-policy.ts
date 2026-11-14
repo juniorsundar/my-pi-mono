@@ -37,7 +37,7 @@ export type ConfirmationDecision =
   | { action: "bypass" }
   | { action: "block"; reason: string };
 
-const PROFILE_ENV_KEY = "PI_PERMISSION_PROFILE";
+export const PROFILE_ENV_KEY = "PI_PERMISSION_PROFILE";
 
 let currentProfile: Profile = DEFAULT_PROFILE;
 

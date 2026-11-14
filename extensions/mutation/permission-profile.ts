@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   DEFAULT_PROFILE,
+  PROFILE_ENV_KEY,
   PROFILE_STATE_CUSTOM_TYPE,
   evaluatePermission,
   getCurrentProfile,
@@ -82,10 +83,13 @@ export default function registerPermissionProfile(pi: ExtensionAPI) {
       )
       .pop() as { data?: { profile?: Profile } } | undefined;
 
+    // An explicit PI_PERMISSION_PROFILE override (e.g. subagent panes) wins over saved state.
+    const fromEnv = parseProfile(process.env[PROFILE_ENV_KEY] ?? "");
     setCurrentProfile(
-      entry?.data && isProfile(entry.data.profile)
-        ? entry.data.profile
-        : DEFAULT_PROFILE,
+      fromEnv ??
+        (entry?.data && isProfile(entry.data.profile)
+          ? entry.data.profile
+          : DEFAULT_PROFILE),
     );
     updateStatus(ctx);
   });
