@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { parseAgentDefinition, parseAgentDefinitionFile } from "../src/agent-definition-parser.js";
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { tmpdir } from "os";
 
 describe("parseAgentDefinition", () => {
@@ -89,6 +89,29 @@ You are a scout agent.`;
     expect(result.inheritExtensions).toBe(false);
     expect(result.timeout).toBe(120);
     expect(result.systemPromptBody).toBe("You are a scout agent.");
+  });
+
+  it("parses extraArgs from string, array, expands ~, and resolves relative paths", () => {
+    const home = process.env.HOME ?? "";
+
+    const fromString = parseAgentDefinition(
+      `---\nname: test\nextraArgs: -e ~/ext.ts\n---\nBody`,
+    );
+    expect(fromString.extraArgs).toEqual(["-e", `${home}/ext.ts`]);
+
+    const fromArray = parseAgentDefinition(
+      `---\nname: test\nextraArgs:\n  - -ne\n  - -e ./local.ts\n---\nBody`,
+    );
+    expect(fromArray.extraArgs).toEqual(["-ne", "-e", resolve("./local.ts")]);
+
+    const relative = parseAgentDefinition(
+      `---\nname: test\nextraArgs: -e ../extensions/x.ts\n---\nBody`,
+      "/agents",
+    );
+    expect(relative.extraArgs).toEqual(["-e", resolve("/agents", "../extensions/x.ts")]);
+
+    const absent = parseAgentDefinition(`---\nname: test\n---\nBody`);
+    expect(absent.extraArgs).toEqual([]);
   });
 
   it("ignores unknown frontmatter keys", () => {

@@ -13,10 +13,15 @@ export interface AgentDefinition {
   inheritProjectContext: boolean;
   inheritSkills: boolean;
   inheritExtensions: boolean;
+  /** Literal extra pi argv appended verbatim; paths resolve against the agents dir, `~/` against HOME. */
+  extraArgs: string[];
   timeout?: number;
 }
 
-export function parseAgentDefinition(markdownContent: string): AgentDefinition {
+export function parseAgentDefinition(
+  markdownContent: string,
+  agentsDir: string = process.cwd(),
+): AgentDefinition {
   // Split frontmatter from body
   const parts = markdownContent.split(/^---$/m);
   if (parts.length < 2) {
@@ -49,6 +54,18 @@ export function parseAgentDefinition(markdownContent: string): AgentDefinition {
     tools = toolsRaw.map((t: unknown) => String(t).trim());
   }
 
+  const extraRaw = frontmatter.extraArgs;
+  const extraArgs = (Array.isArray(extraRaw) ? extraRaw : typeof extraRaw === "string" ? [extraRaw] : [])
+    .flatMap((item) => String(item).split(/\s+/))
+    .filter(Boolean)
+    .map((arg) =>
+      arg.startsWith("~/")
+        ? resolve(process.env.HOME ?? "", arg.slice(2))
+        : arg.startsWith("./") || arg.startsWith("../")
+          ? resolve(agentsDir, arg)
+          : arg,
+    );
+
   return {
     name: frontmatter.name ?? "",
     description: frontmatter.description as string | undefined,
@@ -63,6 +80,7 @@ export function parseAgentDefinition(markdownContent: string): AgentDefinition {
     inheritProjectContext: (frontmatter.inheritProjectContext ?? true) as boolean,
     inheritSkills: (frontmatter.inheritSkills ?? true) as boolean,
     inheritExtensions: (frontmatter.inheritExtensions ?? true) as boolean,
+    extraArgs,
     timeout: typeof frontmatter.timeout === "number" ? frontmatter.timeout : undefined,
   };
 }
@@ -78,5 +96,5 @@ export function parseAgentDefinitionFile(
     );
   }
   const content = readFileSync(filePath, "utf-8");
-  return parseAgentDefinition(content);
+  return parseAgentDefinition(content, agentsDir);
 }

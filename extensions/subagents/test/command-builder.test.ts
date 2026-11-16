@@ -16,6 +16,7 @@ function makeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefiniti
     inheritProjectContext: true,
     inheritSkills: true,
     inheritExtensions: true,
+    extraArgs: [],
     ...overrides,
   };
 }
@@ -232,6 +233,28 @@ describe("buildCommand", () => {
       );
 
       expect(result.args).not.toContain("--no-extensions");
+    });
+  });
+
+  describe("extraArgs", () => {
+    it("appends extraArgs verbatim before the task prompt", () => {
+      const result = buildCommand(
+        makeDefinition({ extraArgs: ["-e", "/tmp/ext.ts"] }),
+        "Do stuff",
+      );
+
+      expect(result.args).toEqual([
+        "--mode", "json",
+        "--no-session",
+        "-e", "/tmp/ext.ts",
+        "-p", "Do stuff",
+      ]);
+    });
+
+    it("appends nothing when extraArgs is empty", () => {
+      const result = buildCommand(makeDefinition({ extraArgs: [] }), "Do stuff");
+
+      expect(result.args).not.toContain("-e");
     });
   });
 

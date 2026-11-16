@@ -58,6 +58,9 @@ export function buildCommand(
     args.push("--no-extensions");
   }
 
+  // Literal passthrough (e.g. `-e` extension paths) after the switches above.
+  args.push(...definition.extraArgs);
+
   // Task prompt (-p)
   args.push("-p", task);
 
