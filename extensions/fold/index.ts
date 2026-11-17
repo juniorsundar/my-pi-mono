@@ -1,29 +1,31 @@
-// Folds the tool calls of each run (prompt -> idle) behind one summary line.
+// Folds each stretch of tool calls behind one summary line. A stretch ends when the
+// assistant writes text (narration or the final answer) or the user speaks, so the
+// next tool calls get their own line below that text.
 //
-//   - Click the summary line (fullscreen mode) to open/close that run.
-//   - alt+o opens/closes the most recent run.
+//   - Click the summary line (fullscreen mode) to open/close that stretch.
+//   - alt+o opens/closes the most recent stretch.
 //   - /fold [on|off] turns folding off/on for the session.
 //
-// Thinking blocks of a folded run's tool-calling turns are hidden with it, by patching pi's
-// AssistantMessageComponent (no public hook). Assistant text and tool-result images are not
-// folded. Runs recorded without this extension stay unfolded.
+// The summary line is drawn by the stretch's first tool row, so nothing is written to the
+// session; stretches are rebuilt from the transcript on resume.
+// Thinking blocks of a folded stretch's tool-calling turns are hidden with it, by patching pi's
+// AssistantMessageComponent (no public hook). Assistant text and tool-result images are not folded.
 
 import { AssistantMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Component, MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { type Component, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-const START = "fold"; // rendered as the summary line
-const END = "fold-end"; // stats only, never rendered
 const PATCH = Symbol.for("fold.assistantPatch"); // survives /reload, so the originals are saved once
 
 interface Run {
-  id: string;
+  id: string; // toolCallId of the first call, whose row draws the summary line
   tools: number;
   failed: number;
   turns: number;
+  start: number;
   ms?: number;
   aborted?: boolean;
   open: boolean;
-  live?: { start: number; tool?: string };
+  live?: { tool?: string };
 }
 
 export function summary(r: Run): string {
@@ -40,23 +42,31 @@ export function summary(r: Run): string {
   return `${r.open ? "▾" : "▸"} ${parts.join(" · ")}`;
 }
 
-/** Rebuild runs and the toolCallId -> run map from session entries (file order; a run is contiguous). */
+const hasText = (m: any) => !!m.content?.some?.((c: any) => c.type === "text" && c.text.trim());
+
+/** Rebuild runs and the toolCallId -> run map from session entries (file order), keeping which runs are open. */
 export function scan(entries: any[], runs: Map<string, Run>, toolRun: Map<string, string>) {
+  const open = new Set([...runs.values()].filter((r) => r.open).map((r) => r.id));
+  runs.clear();
+  toolRun.clear();
   let cur: Run | undefined;
   for (const e of entries) {
-    if (e.type === "custom" && e.customType === START && e.data?.id) {
-      cur = runs.get(e.data.id) ?? { id: e.data.id, tools: 0, failed: 0, turns: 0, open: false };
-      runs.set(cur.id, cur);
-    } else if (e.type === "custom" && e.customType === END) {
-      const r = runs.get(e.data?.id);
-      if (r) Object.assign(r, e.data);
-      cur = undefined;
-    } else if (cur && e.type === "message" && e.message?.role === "assistant") {
-      for (const c of e.message.content ?? []) {
-        if (c.type !== "toolCall" || toolRun.has(c.id)) continue;
-        toolRun.set(c.id, cur.id);
-        cur.tools++; // overwritten by the END entry when the run settled
-      }
+    const m = e.type === "message" ? e.message : undefined;
+    if (m?.role === "user") cur = undefined;
+    else if (m?.role === "assistant") {
+      if (hasText(m)) cur = undefined;
+      const calls = (m.content ?? []).filter((c: any) => c.type === "toolCall");
+      if (!calls.length) continue;
+      if (!cur) runs.set(calls[0].id, (cur = { id: calls[0].id, tools: 0, failed: 0, turns: 0, start: m.timestamp, open: open.has(calls[0].id) }));
+      for (const c of calls) toolRun.set(c.id, cur.id);
+      cur.tools += calls.length;
+      cur.turns++;
+      if (m.stopReason === "aborted") cur.aborted = true;
+    } else if (m?.role === "toolResult") {
+      const r = runs.get(toolRun.get(m.toolCallId)!);
+      if (!r) continue;
+      if (m.isError) r.failed++;
+      r.ms = m.timestamp - r.start;
     }
   }
 }
@@ -66,18 +76,32 @@ export default function (pi: ExtensionAPI) {
   const runs = new Map<string, Run>();
   const toolRun = new Map<string, string>();
   const hasResult = new Set<string>();
-  let pending: Run | undefined; // current run; `marked` once its summary entry is written
-  let marked = false;
+  let active = false; // between prompt and idle
+  let cur: Run | undefined; // the stretch new tool calls join
+  let fresh = false; // cur was started by the message now streaming, so its own text does not end it
   let rerender: (() => void) | undefined;
 
-  const folded = (toolCallId: string) => {
-    if (!enabled) return false;
-    let id = toolRun.get(toolCallId);
-    // A row can render before any tool event; claim it for the live run.
-    if (!id && marked && pending) toolRun.set(toolCallId, (id = pending.id));
-    const run = id ? runs.get(id) : undefined;
-    return !!run && !run.open;
+  const end = () => {
+    if (!cur) return;
+    cur.ms = Date.now() - cur.start;
+    delete cur.live;
+    cur = undefined;
   };
+  const claim = (toolCallId: string) => {
+    if (!active || toolRun.has(toolCallId)) return;
+    if (!cur) {
+      runs.set(toolCallId, (cur = { id: toolCallId, tools: 0, failed: 0, turns: 0, start: Date.now(), open: false, live: {} }));
+      fresh = true;
+    }
+    toolRun.set(toolCallId, cur.id);
+  };
+  // A row can render before any tool event, so rendering claims too.
+  const runOf = (toolCallId: string) => {
+    if (!enabled) return undefined;
+    claim(toolCallId);
+    return runs.get(toolRun.get(toolCallId)!);
+  };
+  const folded = (toolCallId: string) => runOf(toolCallId)?.open === false;
 
   // shortcut: patches a pi internal (updateContent/render/lastMessage); if pi adds a message-renderer hook, use that.
   // Thinking streams before its turn's tool call exists, so it shows until the call arrives.
@@ -97,6 +121,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   // One tool row half (call or result). Draws nothing while folded, otherwise pi's default box frame.
+  // The call half of a run's first tool also draws the run's summary line, above the frame.
   class Row implements Component {
     constructor(
       public child: Component,
@@ -104,20 +129,33 @@ export default function (pi: ExtensionAPI) {
       private part: "call" | "result",
       private bg: ((s: string) => string) | undefined, // undefined: the tool frames itself
       private pad: number,
+      private theme: any,
     ) {}
     invalidate() {
       this.child.invalidate?.();
     }
-    // shortcut: clicks are not forwarded to the child, so pi's whole-row click-to-expand is the only mouse action; forward if a tool renderer needs its own click targets.
+    private head() {
+      const run = this.part === "call" ? runOf(this.id) : undefined;
+      return run?.id === this.id ? run : undefined;
+    }
+    // shortcut: other clicks are not forwarded to the child, so pi's whole-row click-to-expand is the only mouse action on a tool; forward if a tool renderer needs its own click targets.
+    handleMouse(event: any) {
+      const run = this.head();
+      if (!run || event.y !== 0 || event.type !== "click" || event.button !== "left") return undefined;
+      run.open = !run.open;
+      return { handled: true };
+    }
     render(width: number): string[] {
-      if (folded(this.id)) return [];
-      if (!this.bg) return this.child.render(width);
-      // Copy: components return their cached array, and padding it in place grows it on every redraw.
+      const run = this.head();
+      const top = run ? [truncateToWidth(" " + this.theme.fg(run.failed ? "warning" : "muted", summary(run)), width)] : [];
+      if (folded(this.id)) return top;
+      if (run) top.push("");
+      if (!this.bg) return [...top, ...this.child.render(width)];
       const lines = this.child.render(Math.max(1, width - 2 * this.pad)).slice();
       if (this.part === "call") lines.unshift("");
       if (this.part === "result" || !hasResult.has(this.id)) lines.push("");
       const left = " ".repeat(this.pad);
-      return lines.map((l) => this.bg!(left + l + " ".repeat(Math.max(0, width - this.pad - visibleWidth(l)))));
+      return [...top, ...lines.map((l) => this.bg!(left + l + " ".repeat(Math.max(0, width - this.pad - visibleWidth(l)))))];
     }
   }
 
@@ -130,7 +168,7 @@ export default function (pi: ExtensionAPI) {
       const bg = self
         ? undefined
         : (s: string) => theme.bg(ctx.isPartial ? "toolPendingBg" : ctx.isError ? "toolErrorBg" : "toolSuccessBg", s);
-      return new Row(build({ ...ctx, lastComponent: last }, theme), ctx.toolCallId, part, bg, ctx.outputPad);
+      return new Row(build({ ...ctx, lastComponent: last }, theme), ctx.toolCallId, part, bg, ctx.outputPad, theme);
     };
     return {
       renderShell: "self",
@@ -151,75 +189,55 @@ export default function (pi: ExtensionAPI) {
     } as any;
   });
 
-  pi.registerEntryRenderer<{ id: string }>(START, (entry, _options, theme) => {
-    const run = entry.data && runs.get(entry.data.id);
-    if (!enabled || !run) return undefined;
-    const line: Component = {
-      invalidate() {},
-      render: (width) => [truncateToWidth(" " + theme.fg(run.failed ? "warning" : "muted", summary(run)), width)],
-    };
-    return new MouseRegion(line, (event) => {
-      if (event.type !== "click" || event.button !== "left") return undefined;
-      run.open = !run.open;
-      return { handled: true };
-    });
-  });
-
-  // Write the summary entry at the run's first tool call, so runs without tools get no line.
-  const mark = () => {
-    if (!enabled || !pending || marked) return;
-    marked = true;
-    runs.set(pending.id, pending);
-    pi.appendEntry(START, { id: pending.id });
-  };
-
+  // Steering and follow-ups arrive inside the same prompt-to-idle span; the user message ends the stretch.
   pi.on("before_agent_start", () => {
-    // Steering and follow-ups arrive inside the same run; only start a new one when idle.
-    if (!pending) {
-      pending = { id: `${Date.now()}`, tools: 0, failed: 0, turns: 0, open: false, live: { start: Date.now() } };
-      marked = false;
-    }
+    active = true;
   });
-  pi.on("turn_start", () => {
-    if (pending) pending.turns++;
+  pi.on("message_start", (event) => {
+    if ((event.message as any).role === "user") end();
+    fresh = false;
   });
   pi.on("message_update", (event) => {
     const m = event.message as any;
-    if (m.role === "assistant" && m.content?.some((c: any) => c.type === "toolCall")) mark();
+    if (m.role !== "assistant") return;
+    // Narration ends the stretch, so this message's tool calls start a new one below the text.
+    if (!fresh && hasText(m)) end();
+    for (const c of m.content ?? []) if (c.type === "toolCall") claim(c.id);
+  });
+  pi.on("message_end", (event) => {
+    const m = event.message as any;
+    if (m.role !== "assistant") return;
+    if (!fresh && hasText(m)) end();
+    if (cur && m.content?.some((c: any) => c.type === "toolCall")) cur.turns++;
   });
   pi.on("tool_execution_start", (event) => {
-    if (event.parentToolCallId || !pending) return;
-    mark();
-    if (marked) toolRun.set(event.toolCallId, pending.id);
-    pending.live!.tool = event.toolName;
+    if (event.parentToolCallId) return;
+    claim(event.toolCallId);
+    const run = runs.get(toolRun.get(event.toolCallId)!);
+    if (run?.live) run.live.tool = event.toolName;
   });
   pi.on("tool_execution_end", (event) => {
-    if (event.parentToolCallId || !pending) return;
-    pending.tools++;
-    if (event.isError) pending.failed++;
+    if (event.parentToolCallId) return;
+    const run = runs.get(toolRun.get(event.toolCallId)!);
+    if (!run) return;
+    run.tools++;
+    if (event.isError) run.failed++;
   });
   pi.on("agent_settled", (event) => {
-    const run = pending;
-    pending = undefined;
-    if (!run) return;
-    run.ms = Date.now() - run.live!.start;
-    run.aborted = event.aborted || undefined;
-    delete run.live;
-    if (marked) {
-      const { id, tools, failed, turns, ms, aborted } = run;
-      pi.appendEntry(END, { id, tools, failed, turns, ms, aborted });
-    }
+    if (cur && event.aborted) cur.aborted = true;
+    end();
+    active = false;
   });
 
-  const rescan = (_event: unknown, ctx: any) => scan(ctx.sessionManager.getEntries(), runs, toolRun);
+  const rescan = (_event: unknown, ctx: any) => scan(ctx.sessionManager.getBranch(), runs, toolRun);
   pi.on("session_start", rescan);
   pi.on("session_tree", rescan);
 
   pi.registerShortcut("alt+o", {
-    description: "Fold/unfold the tool calls of the most recent run",
+    description: "Fold/unfold the most recent stretch of tool calls",
     handler: (ctx) => {
       const run = [...runs.values()].pop();
-      if (!run) return ctx.ui.notify("No folded run yet");
+      if (!run) return ctx.ui.notify("No folded tool calls yet");
       run.open = !run.open;
       rerender?.();
     },
@@ -230,10 +248,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const arg = args.trim();
       enabled = arg === "on" ? true : arg === "off" ? false : !enabled;
-      // Flipping the global expand state makes pi rebuild every summary entry, which adds or removes the lines.
-      const expanded = ctx.ui.getToolsExpanded();
-      ctx.ui.setToolsExpanded(!expanded);
-      ctx.ui.setToolsExpanded(expanded);
+      rerender?.();
       ctx.ui.notify(`Tool folding ${enabled ? "on" : "off"}`);
     },
   });
