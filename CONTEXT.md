@@ -57,6 +57,8 @@ _Avoid_: Repository tree
 
 Delegates bounded work from the main pi agent to disposable child agents (scout, worker, planner, etc.). Each subagent is a fresh `pi` process with its own system prompt, tool set, model, and timeout.
 
+Two backends share the `subagent` tool name and the agent definitions; `extensions/subagents/index.ts` picks one at load. Inside herdr (`HC_TERMINAL_ID` set) `src/herdr.ts` runs each subagent as an interactive `pi` in an hc terminal, with `/subagent check` to reopen one. Elsewhere `src/index.ts` runs headless child processes; everything below describes that backend.
+
 ### Core concepts
 
 **Subagent**:
