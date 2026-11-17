@@ -4,14 +4,16 @@
 //   - alt+o opens/closes the most recent run.
 //   - /fold [on|off] turns folding off/on for the session.
 //
-// Assistant text, thinking blocks and tool-result images are not folded: pi has
-// no public hook for them. Runs recorded without this extension stay unfolded.
+// Thinking blocks of a folded run's tool-calling turns are hidden with it, by patching pi's
+// AssistantMessageComponent (no public hook). Assistant text and tool-result images are not
+// folded. Runs recorded without this extension stay unfolded.
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Component, MouseRegion, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const START = "fold"; // rendered as the summary line
 const END = "fold-end"; // stats only, never rendered
+const PATCH = Symbol.for("fold.assistantPatch"); // survives /reload, so the originals are saved once
 
 interface Run {
   id: string;
@@ -75,6 +77,23 @@ export default function (pi: ExtensionAPI) {
     if (!id && marked && pending) toolRun.set(toolCallId, (id = pending.id));
     const run = id ? runs.get(id) : undefined;
     return !!run && !run.open;
+  };
+
+  // shortcut: patches a pi internal (updateContent/render/lastMessage); if pi adds a message-renderer hook, use that.
+  // Thinking streams before its turn's tool call exists, so it shows until the call arrives.
+  const proto = AssistantMessageComponent.prototype as any;
+  const orig = (proto[PATCH] ??= { updateContent: proto.updateContent, render: proto.render });
+  const hides = (m: any) => !!m?.content?.some((c: any) => c.type === "toolCall" && folded(c.id));
+  proto.updateContent = function (message: any, ...rest: any[]) {
+    this[PATCH] = hides(message);
+    const shown = this[PATCH] ? { ...message, content: message.content.filter((c: any) => c.type !== "thinking") } : message;
+    orig.updateContent.call(this, shown, ...rest);
+    this.lastMessage = message;
+  };
+  proto.render = function (width: number) {
+    // Opening or closing a run changes the answer without any message event; rebuild lazily.
+    if (this.lastMessage && hides(this.lastMessage) !== this[PATCH]) this.updateContent(this.lastMessage);
+    return orig.render.call(this, width);
   };
 
   // One tool row half (call or result). Draws nothing while folded, otherwise pi's default box frame.
