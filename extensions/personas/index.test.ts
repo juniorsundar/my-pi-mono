@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
@@ -17,6 +17,7 @@ function createFakePi() {
   const tools: unknown[] = [];
   const entries: Array<{ customType: string; data?: unknown }> = [];
   const messages: Array<{ customType: string; content: string; display?: boolean }> = [];
+  const messageOptions: unknown[] = [];
 
   const pi = {
     on: (event: string, handler: FakeHandler) => {
@@ -25,9 +26,12 @@ function createFakePi() {
     registerCommand: (name: string, options: any) => commands.push({ name, options }),
     registerTool: (tool: unknown) => tools.push(tool),
     appendEntry: (customType: string, data?: unknown) => entries.push({ customType, data }),
-    sendMessage: (message: { customType: string; content: string; display?: boolean }) =>
-      messages.push(message),
+    sendMessage: (message: { customType: string; content: string; display?: boolean }, options?: unknown) => {
+      messages.push(message);
+      messageOptions.push(options);
+    },
     sendUserMessage: vi.fn(),
+    exec: vi.fn(async () => ({ code: 0, stdout: "{}", stderr: "", killed: false })),
   };
 
   return {
@@ -37,6 +41,7 @@ function createFakePi() {
     tools,
     entries,
     messages,
+    messageOptions,
     sendUserMessage: pi.sendUserMessage,
   };
 }
@@ -63,6 +68,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
     setStatus: vi.fn(),
     select: vi.fn(),
     confirm: vi.fn(),
+    input: vi.fn(),
   };
   const ctx = {
     cwd: "/tmp/test-project",
@@ -71,6 +77,7 @@ function createContext(overrides: Record<string, unknown> = {}) {
     ui,
     isIdle: () => true,
     waitForIdle: async () => {},
+    isProjectTrusted: () => true,
     sessionManager: { getEntries: () => [], getSessionFile: () => "/tmp/session.jsonl" },
     ...overrides,
   };
@@ -1396,6 +1403,241 @@ Current working directory: /tmp/test-project`,
       await promise;
 
       expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nProject contrarian.` });
+    });
+  });
+
+  describe("persona sessions: spawn, send-to and reply delivery", () => {
+    // A fake hc: terminals are plain records the test advances by hand.
+    interface FakeTerminal { state: "live" | "finished"; turn: number; status: string; screen: string }
+    function installFakeHc(fake: FakePi) {
+      const terminals = new Map<string, FakeTerminal>();
+      const calls: string[][] = [];
+      let next = 1;
+      let unavailable = 0;
+      fake.pi.exec.mockImplementation(async (cmd: string, args: string[]) => {
+        calls.push([cmd, ...args]);
+        const ok = (out: unknown = {}) => ({ code: 0, stdout: JSON.stringify(out), stderr: "", killed: false });
+        if (cmd !== "hc") return ok();
+        const [sub, ...rest] = args;
+        const target = rest[rest.length - 1];
+        if (sub === "run") {
+          const address = `t${next++}`;
+          terminals.set(address, { state: "live", turn: 0, status: "idle", screen: "" });
+          return ok({ address });
+        }
+        if (sub === "get") {
+          const t = terminals.get(target);
+          return t ? ok({ state: t.state, turn: t.turn, status: { state: t.status } }) : { code: 1, stdout: "", stderr: "no terminal", killed: false };
+        }
+        if (sub === "send") {
+          if (unavailable > 0) {
+            unavailable--;
+            return { code: 1, stdout: "", stderr: 'error: "unavailable"', killed: false };
+          }
+          const t = terminals.get(rest[rest.length - 2])!;
+          t.status = "working";
+          return ok({ started: true });
+        }
+        if (sub === "read") return { code: 0, stdout: terminals.get(target)?.screen ?? "", stderr: "", killed: false };
+        return ok();
+      });
+      return { terminals, calls, failSendsWhileBooting: (n: number) => { unavailable = n; } };
+    }
+
+    function spawnArgv(calls: string[][]) {
+      return calls.filter((c) => c[0] === "hc" && c[1] === "run");
+    }
+
+    // Writes the persona's reply into the session file the spawned pi would write.
+    function writeReply(runCall: string[], text: string) {
+      const dir = runCall[runCall.indexOf("--session-dir") + 1];
+      const line = { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } };
+      writeFileSync(join(dir, "2026-01-01_x.jsonl"), `${JSON.stringify({ type: "session" })}\n${JSON.stringify(line)}\n`);
+    }
+
+    function sessionSetup(extra: Record<string, unknown> = {}) {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "contrarian", { name: "contrarian", description: "Skeptic" });
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor", model: "anthropic/claude-x", tools: "read,bash" });
+      const cwd = makeTempDir("personas-cwd-");
+      const fake = setup({ globalDir, projectDir: missingDir(), terminalId: "t59", pollMs: 0, ...extra });
+      const hc = installFakeHc(fake);
+      return { fake, hc, cwd, globalDir };
+    }
+
+    async function run(fake: FakePi, args: string, cwd: string, overrides: Record<string, unknown> = {}) {
+      const { ctx, ui, notify } = createContext({ cwd, ...overrides });
+      await commandHandler(fake)(args, ctx);
+      return { ui, notify };
+    }
+
+    // The toggle list: each pick toggles a check mark, "Spawn selected" spawns.
+    function pickInOrder(ui: { select: any }, ...picks: string[]) {
+      for (const pick of picks) {
+        ui.select.mockImplementationOnce(async (_title: string, opts: string[]) => opts.find((o) => o.includes(pick)));
+      }
+    }
+
+    async function spawn(fake: FakePi, cwd: string, picks: string[], overrides: Record<string, unknown> = {}) {
+      const { ctx, ui, notify } = createContext({ cwd, ...overrides });
+      pickInOrder(ui, ...picks, "Spawn selected");
+      await commandHandler(fake)("spawn", ctx);
+      return { ui, notify };
+    }
+
+    it("spawns each selected persona as a forked pi in a paneless hc terminal", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["mentor"], { sessionManager: { getEntries: () => [], getSessionFile: () => "/tmp/main.jsonl" } });
+
+      const [call] = spawnArgv(hc.calls);
+      const sep = call.indexOf("--");
+      const id = call[call.indexOf("--name") + 1];
+      expect(id).toMatch(/^mentor-[0-9a-f]{4}$/);
+      expect(call.slice(0, sep)).toEqual(["hc", "run", "--bg", "--json", "--no-notify", "--name", id, "--cwd", cwd, "--parent", "t59"]);
+      expect(call.slice(sep + 1)).toEqual([
+        "env", "PI_PERMISSION_PROFILE=yolo", "PI_PERSONA_SESSION=mentor",
+        "pi", "--fork", "/tmp/main.jsonl", "--session-dir", join(cwd, ".pi", "persona-sessions", id), "-a",
+        "--model", "anthropic/claude-x", "--tools", "read,bash",
+      ]);
+      expect(readFileSync(join(cwd, ".pi", "persona-sessions", ".gitignore"), "utf8")).toBe("*\n");
+    });
+
+    it("toggles picks: several personas spawn, a pick made twice is unselected", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian", "mentor", "mentor"]);
+      const names = spawnArgv(hc.calls).map((c) => c[c.indexOf("--name") + 1]);
+      expect(names).toHaveLength(1);
+      expect(names[0]).toMatch(/^contrarian-/);
+    });
+
+    it("shows a check mark on toggled personas", async () => {
+      const { fake, cwd } = sessionSetup();
+      const { ui } = await spawn(fake, cwd, ["contrarian"]);
+      const secondList: string[] = ui.select.mock.calls[1][1];
+      expect(secondList.find((o) => o.includes("contrarian"))).toMatch(/^✓/);
+      expect(secondList.find((o) => o.includes("mentor"))).not.toMatch(/^✓/);
+      expect(secondList[secondList.length - 1]).toBe("Spawn selected");
+    });
+
+    it("spawns nothing when the toggle list is cancelled", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      const { ctx, ui } = createContext({ cwd });
+      pickInOrder(ui, "contrarian");
+      ui.select.mockResolvedValueOnce(undefined);
+      await commandHandler(fake)("spawn", ctx);
+      expect(spawnArgv(hc.calls)).toHaveLength(0);
+    });
+
+    it("leaves project-directory personas out of the spawn list in an untrusted project", async () => {
+      const projectDir = makeTempDir("personas-project-");
+      writePersonaDefinition(projectDir, "local", { name: "local", extraArgs: "-e ./evil.ts" });
+      const { fake, cwd } = sessionSetup({ projectDir });
+      const { ctx, ui } = createContext({ cwd, isProjectTrusted: () => false });
+      ui.select.mockResolvedValueOnce(undefined);
+      await commandHandler(fake)("spawn", ctx);
+      const list: string[] = ui.select.mock.calls[0][1];
+      expect(list.some((o) => o.includes("local"))).toBe(false);
+      expect(list.some((o) => o.includes("contrarian"))).toBe(true);
+    });
+
+    it("passes -na to the child in an untrusted project", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"], { isProjectTrusted: () => false });
+      expect(spawnArgv(hc.calls)[0]).toContain("-na");
+    });
+
+    it("skips a persona that is already live, with a notice", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      const { notify } = await spawn(fake, cwd, ["contrarian"]);
+      expect(spawnArgv(hc.calls)).toHaveLength(1);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("contrarian is already live"), "info");
+    });
+
+    it("send-to types the message into the persona's terminal without an --if guard and returns at once", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian is   this plan sound?", cwd);
+      const send = hc.calls.find((c) => c[1] === "send")!;
+      expect(send).toEqual(["hc", "send", "--", "t1", "is   this plan sound?"]);
+      expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(0);
+    });
+
+    it("send-to asks for the message when it is missing", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      const { ctx, ui } = createContext({ cwd });
+      ui.input.mockResolvedValueOnce("why?");
+      await commandHandler(fake)("send-to contrarian", ctx);
+      expect(ui.input).toHaveBeenCalled();
+      expect(hc.calls.find((c) => c[1] === "send")).toEqual(["hc", "send", "--", "t1", "why?"]);
+    });
+
+    it("send-to retries while the child is still booting", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      hc.failSendsWhileBooting(2);
+      await run(fake, "send-to contrarian hi", cwd);
+      expect(hc.calls.filter((c) => c[1] === "send")).toHaveLength(3);
+    });
+
+    it("send-to a persona that is not live is refused", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      const { notify } = await run(fake, "send-to contrarian hi", cwd);
+      expect(hc.calls.some((c) => c[1] === "send")).toBe(false);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
+    });
+
+    it("delivers the reply as a persona-reply that does not trigger a turn, leaving the terminal alive", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian thoughts?", cwd);
+      writeReply(spawnArgv(hc.calls)[0], "It will not scale.");
+      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+
+      await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
+      const i = fake.messages.findIndex((m) => m.customType === "persona-reply");
+      expect(fake.messages[i]).toMatchObject({ content: "contrarian: It will not scale.", display: true });
+      expect(fake.messageOptions[i]).toEqual({ triggerTurn: false });
+      expect(hc.calls.some((c) => c[1] === "kill" || c[1] === "rm")).toBe(false);
+    });
+
+    it("surfaces the terminal when the persona is blocked on a dialog", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian go", cwd);
+      hc.terminals.get("t1")!.status = "blocked";
+      await vi.waitFor(() =>
+        expect(hc.calls).toContainEqual(["herdr-app", "do", "terminal.peek", "--terminal", "t1"]),
+      );
+      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+      await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
+    });
+
+    it("reports a persona that exited with its screen tail and lets it be spawned again", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian go", cwd);
+      Object.assign(hc.terminals.get("t1")!, { state: "finished", screen: "boot\nError: unknown model" });
+
+      await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
+      const reply = fake.messages.find((m) => m.customType === "persona-reply")!;
+      expect(reply.content).toContain("contrarian exited");
+      expect(reply.content).toContain("Error: unknown model");
+
+      await spawn(fake, cwd, ["contrarian"]);
+      expect(spawnArgv(hc.calls)).toHaveLength(2);
+    });
+
+    it("refuses spawn and send-to outside herdr, while live switching still works", async () => {
+      const { fake, hc, cwd } = sessionSetup({ terminalId: "" });
+      const a = await run(fake, "spawn", cwd);
+      const b = await run(fake, "send-to contrarian hi", cwd);
+      expect(a.notify).toHaveBeenCalledWith(expect.stringContaining("need herdr"), "warning");
+      expect(b.notify).toHaveBeenCalledWith(expect.stringContaining("need herdr"), "warning");
+      expect(hc.calls).toHaveLength(0);
+      await run(fake, "contrarian", cwd);
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nYou are the contrarian persona.` });
     });
   });
 });

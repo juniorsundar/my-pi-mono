@@ -71,5 +71,5 @@ Keep live switching exactly as it is. Add **Persona sessions**: you spawn one or
 ### Further Notes
 
 - This supersedes spec 0012's out-of-scope line "a persona must never be spawnable". `CONTEXT.md` now defines **Persona session** and **Session settings**, and the Persona vs Agent Type ambiguity was rewritten. A persona is still never run as a *subagent*.
-- Verify early that `hc send` into a working pi arrives as a steer (pi's Enter during a turn) rather than a queued follow-up. If it doesn't, the steer behaviour needs a different input path.
+- Verified by hand (ticket 0069): `hc send` into a working pi arrives as a steer. A message sent during a `sleep 25` tool call landed mid-turn as a user message wrapped `<hc from="t59">…</hc>`, one reply covered both messages, and hc's `turn` went 0 → 1 when the turn ended.
 - `SessionManager.forkFrom` copies the source `.jsonl` once, so forking the parent's live, append-only file is expected to be safe.

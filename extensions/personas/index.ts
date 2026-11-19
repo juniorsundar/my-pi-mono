@@ -8,14 +8,20 @@ import {
 import { basename } from "node:path";
 import type { PersonaDefinition } from "./persona-definition-parser.js";
 import {
+  projectPersonasDir,
   resolvePersonas,
   type FailedPersona,
   type PersonaDirectories,
 } from "./persona-store.js";
+import { createPersonaSessions } from "./persona-sessions.js";
 
 export type PersonasExtensionOptions = PersonaDirectories & {
   /** Persona session marker (PI_PERSONA_SESSION): set when this process is a spawned Persona session. */
   personaSession?: string;
+  /** The main session's hc terminal (HC_TERMINAL_ID); empty means not inside herdr. */
+  terminalId?: string;
+  /** Pause between hc polls while waiting for a Persona session's reply. */
+  pollMs?: number;
 };
 
 const PERSONA_STATUS_KEY = "persona";
@@ -40,6 +46,10 @@ export default function personasExtension(
   // Session-scoped: a replace-mode switch is confirmed at most once per session,
   // re-armed by session_start unless the session restores a replace persona.
   let replaceModeConfirmed = false;
+  const sessions = createPersonaSessions(pi, {
+    terminalId: options.terminalId ?? process.env.HC_TERMINAL_ID ?? "",
+    pollMs: options.pollMs ?? 1000,
+  });
 
   async function switchToPersona(persona: PersonaDefinition, ctx: ExtensionCommandContext): Promise<void> {
     if (persona.systemPromptMode === "replace" && !replaceModeConfirmed) {
@@ -129,15 +139,35 @@ export default function personasExtension(
   }
 
   pi.registerCommand("persona", {
-    description: "Switch the active persona: /persona [<name>|off|default|none]",
+    description: "Switch the active persona, or consult one as a Persona session: /persona [<name>|off|spawn|send-to <persona> [message]]",
     handler: async (args, ctx) => {
       if (personaSession) {
         ctx.ui.notify(PERSONA_SESSION_COMMAND_NOTICE, "warning");
         return;
       }
-      if (!(await ensureIdle(ctx))) return;
-
       const input = args.trim();
+
+      // Persona session subcommands win over same-named personas and never wait for idle.
+      if (input === "spawn") {
+        const projectDir = options.projectDir ?? projectPersonasDir(ctx.cwd);
+        // Session settings reach argv, so an untrusted project's personas are never spawned.
+        const spawnable = resolvePersonas(options, ctx.cwd).validPersonas.filter(
+          (persona) => ctx.isProjectTrusted() || persona.directory !== projectDir,
+        );
+        await sessions.spawn(spawnable, ctx);
+        return;
+      }
+      const sendTo = /^send-to(?:\s+(\S+))?\s*([\s\S]*)$/.exec(input);
+      if (sendTo) {
+        if (!sendTo[1]) {
+          ctx.ui.notify("Usage: /persona send-to <persona> [message]", "warning");
+          return;
+        }
+        await sessions.sendTo(sendTo[1], sendTo[2], ctx);
+        return;
+      }
+
+      if (!(await ensureIdle(ctx))) return;
       const { validPersonas, failedPersonas } = resolvePersonas(options, ctx.cwd);
 
       if (DEFAULT_ALIASES.has(input.toLowerCase())) {
