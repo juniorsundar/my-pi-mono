@@ -288,7 +288,7 @@ None currently.
 
 ## Personas
 
-Named, switchable profiles for a session's **main agent** — the agent you talk to, never a spawned child. A persona changes how the main agent behaves by changing its system prompt mid-session.
+Named, switchable profiles. A persona is used in one of two ways: applied to a session's **main agent** (the agent you talk to), changing its system prompt mid-session; or run as a **Persona session** beside the main agent, which the user consults by message.
 
 ### Language
 
@@ -297,8 +297,12 @@ A named, switchable profile applied to the main agent of a session. Changes the 
 _Avoid_: Mode, profile, primary agent, agent ("profile" collides with permission profiles; "agent" collides with subagent agent types)
 
 **Persona definition**:
-The `.md` file declaring a persona: YAML frontmatter (`name`, `description`, and the prompt composition mode) plus a body that becomes the persona's prompt. Resolved from the **Project persona directory**, the **Global persona directory**, or shipped as a **Bundled persona**; on name collisions, project wins over global, global wins over bundled.
+The `.md` file declaring a persona: YAML frontmatter (`name`, `description`, the prompt composition mode, and optional **Session settings**) plus a body that becomes the persona's prompt. Resolved from the **Project persona directory**, the **Global persona directory**, or shipped as a **Bundled persona**; on name collisions, project wins over global, global wins over bundled.
 _Avoid_: Persona config, persona spec, agent definition (that term belongs to subagents)
+
+**Session settings**:
+The parts of a Persona definition that shape a **Persona session** only: its model, thinking level, tools, extensions, skills, and project context. Ignored when the persona is applied to the main agent, whose model and tools never change on a persona switch.
+_Avoid_: Persona tools, persona config
 
 **Project persona directory**:
 `.pi/personas/` in the project root. Same-named personas here take precedence over the Global persona directory.
@@ -324,9 +328,14 @@ _Avoid_: Built-in persona, default persona ("default" means *no* persona active)
 How a persona's body composes with pi's built-in prompt. **Append mode** keeps the built-in prompt and adds the persona body; **Replace mode** discards the built-in prompt and uses the persona body alone (pi's project context and skills are still attached in both modes). Personas default to append; replace requires an explicit confirmation at switch time.
 _Avoid_: System prompt strategy, merge mode
 
+**Persona session**:
+A long-lived session running one persona, forked from the main session's conversation at spawn time and owned by that main session. The user sends it messages from the main session; each reply is delivered back into the main session without blocking it. It stays alive between messages until the user kills it. At most one Persona session per persona per main session. Spawning one never changes the **Active persona**.
+_Avoid_: Persona subagent, spawned persona, persona agent
+
 ### Flagged ambiguities
 
-- **Persona vs Agent Type**: An agent type (subagents) is a disposable child role spawned per task; a persona is a live profile of the main agent. Despite the shared `.md`-with-frontmatter shape, they are different concepts with different parsers and directories. A persona must never be spawnable, and an agent type must never be applicable as a persona.
+- **Persona vs Agent Type**: An agent type (subagents) is a disposable child role spawned per task and collected for its output; a persona is a profile, applied either as the main agent's Active persona or as a long-lived Persona session the user converses with. Despite the shared `.md`-with-frontmatter shape, they are different concepts with different parsers and directories. A persona is never run as a subagent, and an agent type is never applicable as a persona.
+- **Persona session vs Subagent**: both are spawned `pi` processes, but a subagent is task-scoped, starts from a clean prompt, and is closed once collected; a Persona session starts from a fork of the main conversation, outlives each reply, and ends only when the user kills it (or the main session ends).
 
 ### Example dialogue
 

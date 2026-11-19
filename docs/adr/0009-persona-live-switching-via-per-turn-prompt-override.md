@@ -17,3 +17,4 @@ This is per-turn rather than set-once because pi's `AgentSession` resets its sys
 - Because the active persona lives in the session file as a custom entry, sessions recorded before this extension existed simply have no persona active; there is no migration.
 - Replace mode reassembles the prompt pi-side pieces (append prompt, project context, skills, cwd) itself, because the hook hands over a finished prompt string with no way to swap only the built-in part. If pi changes its own custom-prompt assembly, replace mode drifts until this composition is updated to match.
 - Restoring the active persona reads the session's append-only entry list, which compaction never prunes, so a persona set before a compaction still restores afterwards.
+- Persona *sessions* (ADR 0010) are a separate use of the same definitions. Their Session settings may set model, tools and extensions for the spawned session, but never for the main agent.
