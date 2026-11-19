@@ -13,7 +13,10 @@ import {
   type PersonaDirectories,
 } from "./persona-store.js";
 
-export type PersonasExtensionOptions = PersonaDirectories;
+export type PersonasExtensionOptions = PersonaDirectories & {
+  /** Persona session marker (PI_PERSONA_SESSION): set when this process is a spawned Persona session. */
+  personaSession?: string;
+};
 
 const PERSONA_STATUS_KEY = "persona";
 const PERSONA_STATE_CUSTOM_TYPE = "personas-state";
@@ -22,6 +25,7 @@ const DEFAULT_SWITCH_NOTICE = "Persona switched: default — pi's built-in promp
 const DEFAULT_ALIASES = new Set(["off", "default", "none"]);
 const DEFAULT_PICKER_LABEL = "Default — pi's built-in prompt";
 const REJECTED_MESSAGE = "Persona switch rejected: the agent is still running.";
+const PERSONA_SESSION_COMMAND_NOTICE = "This is a Persona session — /persona is unavailable.";
 
 export default function personasExtension(
   pi: ExtensionAPI,
@@ -30,6 +34,9 @@ export default function personasExtension(
   // Active persona: zero or one. The definition is snapshotted at switch time
   // so per-turn prompt application never touches the disk.
   let activePersona: PersonaDefinition | undefined;
+  // A Persona session is fixed to the persona named by the marker: it never
+  // restores the fork's persona state and refuses /persona, so personas cannot nest.
+  const personaSession = options.personaSession ?? process.env.PI_PERSONA_SESSION;
   // Session-scoped: a replace-mode switch is confirmed at most once per session,
   // re-armed by session_start unless the session restores a replace persona.
   let replaceModeConfirmed = false;
@@ -124,6 +131,10 @@ export default function personasExtension(
   pi.registerCommand("persona", {
     description: "Switch the active persona: /persona [<name>|off|default|none]",
     handler: async (args, ctx) => {
+      if (personaSession) {
+        ctx.ui.notify(PERSONA_SESSION_COMMAND_NOTICE, "warning");
+        return;
+      }
       if (!(await ensureIdle(ctx))) return;
 
       const input = args.trim();
@@ -160,6 +171,24 @@ export default function personasExtension(
   // restored session context from the original switch.
   pi.on("session_start", async (_event, ctx) => {
     replaceModeConfirmed = false;
+    if (personaSession) {
+      const { validPersonas } = resolvePersonas(options, ctx.cwd);
+      const persona = validPersonas.find((candidate) => candidate.name === personaSession);
+      if (!persona) {
+        activePersona = undefined;
+        ctx.ui.setStatus(PERSONA_STATUS_KEY, undefined);
+        ctx.ui.notify(
+          `Persona session persona "${personaSession}" is no longer available — using pi's built-in prompt.`,
+          "warning",
+        );
+        return;
+      }
+      // Activated directly: the fork's restored state is ignored, and there is
+      // neither a replace-mode confirmation nor a switch notice.
+      activePersona = persona;
+      ctx.ui.setStatus(PERSONA_STATUS_KEY, `persona:${persona.name}`);
+      return;
+    }
     const stateEntry = ctx.sessionManager
       .getEntries()
       .filter(

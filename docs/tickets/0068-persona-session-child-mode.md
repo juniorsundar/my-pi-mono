@@ -12,11 +12,11 @@ When `PI_PERSONA_SESSION=<name>` is set, the personas extension is running insid
 
 ### Acceptance criteria
 
-- [ ] With the marker set and a different persona in restored `personas-state`, the per-turn hook returns the marker persona's composed prompt
-- [ ] Replace mode applies without a confirm dialog
-- [ ] `/persona` with any arguments is refused with a notice
-- [ ] An unresolvable marker name warns and leaves no persona active
-- [ ] Without the marker, behaviour is unchanged (existing tests stay green)
+- [x] With the marker set and a different persona in restored `personas-state`, the per-turn hook returns the marker persona's composed prompt
+- [x] Replace mode applies without a confirm dialog
+- [x] `/persona` with any arguments is refused with a notice
+- [x] An unresolvable marker name warns and leaves no persona active
+- [x] Without the marker, behaviour is unchanged (existing tests stay green)
 
 ### Blocked by
 
