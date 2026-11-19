@@ -196,7 +196,8 @@ export default function (pi: ExtensionAPI) {
       "run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, "--parent", me,
       // Yolo keeps the mutation extension's hard blocks (protected paths, catastrophic shell) but
       // skips its approval dialogs, which nobody answers in an unattended subagent.
-      "--", "env", `${CHILD_ENV}=1`, "PI_PERMISSION_PROFILE=yolo", "pi", ...piArgs,
+      // hc starts programs with herdr's own PATH, which lacks ~/.local/bin and the project's dev shell.
+      "--", "env", `PATH=${process.env.PATH ?? ""}`, `${CHILD_ENV}=1`, "PI_PERMISSION_PROFILE=yolo", "pi", ...piArgs,
     ]);
     return address as string;
   }
