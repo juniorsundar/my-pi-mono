@@ -1098,6 +1098,92 @@ Current working directory: /tmp/test-project`,
 
   });
 
+  describe("persona session child mode", () => {
+    // Child mode is triggered by the PI_PERSONA_SESSION marker, injected here
+    // through the factory options instead of process.env.
+    it("activates the marker persona and ignores a restored persona-state entry", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      writePersonaDefinition(globalDir, "reviewer", { name: "reviewer" }, "Review skeptically.");
+      const fake = setup({ globalDir, personaSession: "reviewer" });
+
+      const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("mentor")]);
+      await promise;
+
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:reviewer");
+      expect(beforeAgentStart(fake)).toEqual({
+        systemPrompt: `${BUILT_IN_PROMPT}\n\nReview skeptically.`,
+      });
+      expect(fake.messages).toHaveLength(0);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("applies replace mode without a confirmation dialog or switch notice", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(
+        globalDir,
+        "ghost",
+        { name: "ghost", systemPromptMode: "replace" },
+        "Be a ghost.",
+      );
+      const fake = setup({ globalDir, personaSession: "ghost" });
+
+      const { promise, ui } = sessionStart(fake, [stateEntry("mentor")]);
+      await promise;
+
+      expect(ui.confirm).not.toHaveBeenCalled();
+      expect(fake.messages).toHaveLength(0);
+      const [handler] = getHandlers(fake, "before_agent_start");
+      const result = handler(
+        {
+          type: "before_agent_start",
+          prompt: "hello",
+          systemPrompt: BUILT_IN_PROMPT,
+          systemPromptOptions: { cwd: "/tmp/test-project", selectedTools: [] },
+        },
+        createContext().ctx,
+      ) as { systemPrompt: string };
+      expect(result.systemPrompt).toBe(
+        "Be a ghost.\nCurrent working directory: /tmp/test-project",
+      );
+      expect(result.systemPrompt).not.toContain(BUILT_IN_PROMPT);
+    });
+
+    it.each(["", "mentor", "off", "spawn", "send-to mentor hi", "kill mentor"])(
+      "refuses /persona %j with a notice and keeps the marker persona active",
+      async (args) => {
+        const globalDir = makeGlobalDir();
+        writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+        const fake = setup({ globalDir, personaSession: "mentor" });
+        await sessionStart(fake, []).promise;
+
+        const { promise, ui, notify } = switchTo(fake, args);
+        await promise;
+
+        expect(notify).toHaveBeenCalledWith(expect.stringContaining("Persona session"), "warning");
+        expect(ui.confirm).not.toHaveBeenCalled();
+        expect(ui.select).not.toHaveBeenCalled();
+        expect(beforeAgentStart(fake)).toEqual({
+          systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.`,
+        });
+        expect(fake.entries).toHaveLength(0);
+      },
+    );
+
+    it("warns and leaves no persona active when the marker persona cannot be resolved", async () => {
+      const globalDir = makeGlobalDir();
+      writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
+      const fake = setup({ globalDir, personaSession: "ghost" });
+
+      const { promise, notify, setStatus } = sessionStart(fake, [stateEntry("mentor")]);
+      await promise;
+
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("ghost"), "warning");
+      expect(setStatus).toHaveBeenCalledWith("persona", undefined);
+      expect(beforeAgentStart(fake)).toBeUndefined();
+    });
+  });
+
   describe("idle guard", () => {
     it("waits for idle before applying the switch", async () => {
       const fake = setupGlobalPersona("mentor", { name: "mentor" }, "Mentor the user.");
