@@ -18,7 +18,7 @@ Personas for the pi coding agent, used two ways:
 A Persona session is a long-lived `pi` running one persona beside the main agent (ADR 0010). It needs herdr: outside it (`HC_TERMINAL_ID` unset), `spawn`, `send-to` and `kill` refuse, and live switching works as usual.
 
 - `/persona spawn` opens a toggle list: picking a persona toggles a ✓, and "Spawn selected" starts one session per ticked persona. Each session is forked from the main session's conversation at that moment, runs in a paneless hc terminal listed under the main agent in herdr's agents list, and has the persona as its Active persona. A persona that is already live is skipped: kill it and spawn again for a fresh fork.
-- `/persona send-to <persona> [message]` types the message into the session and returns at once. Without a message it asks for one. A message sent while the persona is still answering steers its current turn.
+- `/persona send-to <persona> [message]` types the message into the session, prefixed "Message from the user in the main session:", and returns at once. Without a message it asks for one. A message sent while the persona is still answering steers its current turn.
 - Each reply arrives in the main session as a `persona-reply` message (`contrarian: …`). It does not start a main-agent turn, but the main agent sees it on its next turn. Steering twice during one turn gives one reply.
 - A session waiting on a dialog floats over the tab. A session that dies on its own is reported with the last lines of its screen and can be spawned again.
 - `/persona kill <persona>` ends a session at once. A reply still in flight is discarded.

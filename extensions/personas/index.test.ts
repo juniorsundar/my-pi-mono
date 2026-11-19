@@ -1564,7 +1564,7 @@ Current working directory: /tmp/test-project`,
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian is   this plan sound?", cwd);
       const send = hc.calls.find((c) => c[1] === "send")!;
-      expect(send).toEqual(["hc", "send", "--", "t1", "is   this plan sound?"]);
+      expect(send).toEqual(["hc", "send", "--", "t1", "Message from the user in the main session: is   this plan sound?"]);
       expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(0);
     });
 
@@ -1575,7 +1575,7 @@ Current working directory: /tmp/test-project`,
       ui.input.mockResolvedValueOnce("why?");
       await commandHandler(fake)("send-to contrarian", ctx);
       expect(ui.input).toHaveBeenCalled();
-      expect(hc.calls.find((c) => c[1] === "send")).toEqual(["hc", "send", "--", "t1", "why?"]);
+      expect(hc.calls.find((c) => c[1] === "send")).toEqual(["hc", "send", "--", "t1", "Message from the user in the main session: why?"]);
     });
 
     it("send-to retries while the child is still booting", async () => {

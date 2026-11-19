@@ -104,8 +104,10 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
       const names = [...live.keys()].join(", ");
       return ctx.ui.notify(`No live Persona session "${name}". Live: ${names || "(none)"}`, "warning");
     }
-    const text = message.trim() || (await ctx.ui.input(`Message to ${name}`))?.trim();
-    if (!text) return;
+    const typed = message.trim() || (await ctx.ui.input(`Message to ${name}`))?.trim();
+    if (!typed) return;
+    // hc only tags it `<hc from="tNN">`; without this the persona can't tell the user is talking to it.
+    const text = `Message from the user in the main session: ${typed}`;
     // No --if: a persona mid-turn takes the message as a steer.
     let sent = await pi.exec("hc", ["send", "--", session.terminal, text]);
     // hc refuses input while pi is still booting ("unavailable"): nothing was typed, so retrying is safe.
