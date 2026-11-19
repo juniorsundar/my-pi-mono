@@ -116,7 +116,10 @@ function missingDir(): string {
 // Standard instantiation: fake pi plus directory options.
 function setup(options: Record<string, unknown> = {}): FakePi {
   const fake = createFakePi();
-  personasExtension(fake.pi as any, options as any);
+  // Default personaSession to "" so tests don't pick up PI_PERSONA_SESSION from the env
+  // (e.g. when vitest is run inside a Persona session). Empty string is falsy but not nullish,
+  // so `?? process.env.PI_PERSONA_SESSION` in the extension doesn't override it.
+  personasExtension(fake.pi as any, { personaSession: "", ...options } as any);
   return fake;
 }
 
