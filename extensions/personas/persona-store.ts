@@ -34,7 +34,7 @@ export function loadPersonasFromDirectory(
     .sort();
   for (const fileName of fileNames) {
     try {
-      valid.push(parsePersonaDefinition(readFileSync(join(dir, fileName), "utf8")));
+      valid.push(parsePersonaDefinition(readFileSync(join(dir, fileName), "utf8"), dir));
     } catch (e) {
       failed.push({
         fileName,

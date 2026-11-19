@@ -30,6 +30,35 @@ Frontmatter is validated strictly: unknown fields, a missing `name`, or broken Y
 | `name` | yes | The persona's name — what `/persona <name>` matches, and the collision key across directories. |
 | `description` | no | Shown in the picker and in the Switch notice. |
 | `systemPromptMode` | no | Prompt mode: `append` or `replace`. Defaults to `append`. |
+| `model`, `thinking`, `tools`, `inheritProjectContext`, `inheritSkills`, `inheritExtensions`/`extensions`, `extraArgs` | no | **Session settings** — see below. They shape a Persona session only and are ignored by a switch. |
+
+## Session settings
+
+Optional fields that shape a **Persona session** only: the forked `pi` run beside the main agent. They are the agent-definition fields of the same name and map to pi's flags exactly as `extensions/subagents/src/herdr.ts` does. **A persona switch never reads them** — applying a persona to the main agent changes its system prompt and nothing else, so the agent keeps its model, thinking level, and tools.
+
+| Field | Meaning | pi flag |
+| ----- | ------- | ------- |
+| `model` | Model for the session. | `--model <model>` |
+| `thinking` | Thinking level. | `--thinking <level>` |
+| `tools` | Tool list, as a comma-separated string or a YAML list. | `--tools <comma list>` |
+| `inheritProjectContext` | `false` leaves the project's context files out. | `-nc` |
+| `inheritSkills` | `false` leaves skills out. | `-ns` |
+| `inheritExtensions` | `false` leaves extensions out. `extensions` is the same field under a shorter name. | `-ne` |
+| `extraArgs` | Literal pi args, as one string or a list. Each entry splits on whitespace; `./` and `../` resolve against the definition's directory, `~/` against HOME. | as written |
+
+Absent fields give the session what a plain `pi` would have. `timeout` and `enabled` are agent-definition fields with no persona meaning, so they stay unknown fields here like any other unrecognized key.
+
+```markdown
+---
+name: contrarian
+model: claude-sonnet-4
+thinking: high
+tools: [read, bash]
+inheritSkills: false
+extraArgs: ["--verbose"]
+---
+Your default posture is skepticism. ...
+```
 
 ## Prompt mode
 

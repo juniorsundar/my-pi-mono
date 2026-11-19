@@ -12,12 +12,12 @@ Extend the persona definition parser to accept **Session settings**: `model`, `t
 
 ### Acceptance criteria
 
-- [ ] Each Session setting parses, and a wrong type is a parse error surfaced in the picker
-- [ ] `timeout` and `enabled` are still rejected as unknown fields
-- [ ] Argv mapping matches herdr.ts for every field, including relative and `~/` paths in `extraArgs`
-- [ ] Switching to a persona with Session settings changes only the system prompt (asserted through the per-turn hook)
-- [ ] README documents the fields as session-only
-- [ ] `npx vitest run extensions/personas/` and `npm run typecheck` pass
+- [x] Each Session setting parses, and a wrong type is a parse error surfaced in the picker
+- [x] `timeout` and `enabled` are still rejected as unknown fields
+- [x] Argv mapping matches herdr.ts for every field, including relative and `~/` paths in `extraArgs`
+- [x] Switching to a persona with Session settings changes only the system prompt (asserted through the per-turn hook)
+- [x] README documents the fields as session-only
+- [x] `npx vitest run extensions/personas/` and `npm run typecheck` pass
 
 ### Blocked by
 

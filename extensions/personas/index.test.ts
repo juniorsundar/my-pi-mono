@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import personasExtension from "./index.js";
+import { parsePersonaDefinition, type PersonaDefinition } from "./persona-definition-parser.js";
+import { sessionSettingsArgs } from "./persona-session-args.js";
 
 // ── Fake extension API ───────────────────────────────────────────────
 
@@ -611,6 +613,180 @@ Current working directory: /tmp/test-project`,
 
       expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
       expect(notify).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("session settings in persona definitions", () => {
+    it("a persona carrying every Session setting still switches only the system prompt", async () => {
+      const globalDir = makeGlobalDir();
+      const fullyConfigured = [
+        "model: claude-sonnet-4",
+        "thinking: high",
+        "tools: [read, bash]",
+        "inheritProjectContext: false",
+        "inheritSkills: false",
+        "inheritExtensions: false",
+        "extraArgs: ['--verbose', './extra.md']",
+      ].join("\n");
+      writeFileSync(
+        join(globalDir, "mentor.md"),
+        `---\nname: mentor\n${fullyConfigured}\n---\nMentor the user.`,
+        "utf8",
+      );
+      const fake = setup({ globalDir });
+
+      const { promise, notify, setStatus } = switchTo(fake, "mentor");
+      await promise;
+
+      const applied = beforeAgentStart(fake) as Record<string, unknown>;
+      expect(applied).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.` });
+      expect(Object.keys(applied)).toEqual(["systemPrompt"]);
+      expect(setStatus).toHaveBeenCalledWith("persona", "persona:mentor");
+      expect(notify.mock.calls.some(([, type]) => type === "warning")).toBe(false);
+      expect(fake.entries).toEqual([{ customType: "personas-state", data: { persona: "mentor" } }]);
+    });
+
+    it("a wrongly typed Session setting is a parse error the picker shows as a disabled entry", async () => {
+      const projectDir = makeGlobalDir();
+      const wrongFields: Record<string, { field: string; line: string }> = {
+        "bad-model": { field: "model", line: "model: 3" },
+        "bad-thinking": { field: "thinking", line: "thinking: [high]" },
+        "bad-tools": { field: "tools", line: "tools: 5" },
+        "bad-project-context": {
+          field: "inheritProjectContext",
+          line: "inheritProjectContext: 'no'",
+        },
+        "bad-skills": { field: "inheritSkills", line: "inheritSkills: yes" },
+        "bad-inherit-extensions": {
+          field: "inheritExtensions",
+          line: "inheritExtensions: 'false'",
+        },
+        "bad-extensions": { field: "extensions", line: "extensions: 1" },
+        "bad-extra-args": { field: "extraArgs", line: "extraArgs: { verbose: true }" },
+      };
+      for (const [stem, { line }] of Object.entries(wrongFields)) {
+        writeFileSync(
+          join(projectDir, `${stem}.md`),
+          `---\nname: ${stem}\n${line}\n---\nBody.`,
+          "utf8",
+        );
+      }
+      const fake = setup({ projectDir, globalDir: missingDir(), bundledDir: missingDir() });
+
+      for (const [stem, { field }] of Object.entries(wrongFields)) {
+        const { promise, notify, setStatus } = switchTo(fake, stem);
+        await promise;
+        const [message, type] = notify.mock.calls.at(-1)!;
+        expect(type).toBe("warning");
+        expect(message).toContain(`${stem}.md`);
+        expect(message).toContain(`'${field}'`);
+        expect(setStatus).not.toHaveBeenCalled();
+      }
+
+      const { promise, ui, notify } = switchTo(fake, "");
+      await promise;
+      const options = ui.select.mock.calls[0][1] as string[];
+      for (const [stem, { field }] of Object.entries(wrongFields)) {
+        const entry = options.find((option) => option.startsWith(`${stem}.md — `));
+        expect(entry, `no disabled picker entry for ${stem}`).toBeDefined();
+        expect(entry).toContain(`'${field}'`);
+      }
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("timeout and enabled stay unknown fields", async () => {
+      const projectDir = makeGlobalDir();
+      writeFileSync(
+        join(projectDir, "timed.md"),
+        "---\nname: timed\ntimeout: 60\n---\nBody.",
+        "utf8",
+      );
+      writeFileSync(
+        join(projectDir, "disabled.md"),
+        "---\nname: disabled\nenabled: false\n---\nBody.",
+        "utf8",
+      );
+      const fake = setup({ projectDir, globalDir: missingDir(), bundledDir: missingDir() });
+
+      for (const [stem, key] of [
+        ["timed", "timeout"],
+        ["disabled", "enabled"],
+      ]) {
+        const { promise, notify } = switchTo(fake, stem);
+        await promise;
+        const [message] = notify.mock.calls.at(-1)!;
+        expect(message).toContain(`${stem}.md`);
+        expect(message).toContain(`Unknown persona definition frontmatter key: ${key}`);
+      }
+    });
+
+    describe("argv mapping as in herdr agent definitions", () => {
+      const DEFINITION_DIR = "/definitions/personas";
+
+      function definition(frontmatter: string, directory = DEFINITION_DIR): PersonaDefinition {
+        return parsePersonaDefinition(`---\nname: mentor\n${frontmatter}\n---\nBody.`, directory);
+      }
+
+      it("maps every field to its pi flag", () => {
+        const persona = definition(
+          [
+            "model: claude-sonnet-4",
+            "thinking: high",
+            "tools: [read, bash]",
+            "inheritProjectContext: false",
+            "inheritSkills: false",
+            "inheritExtensions: false",
+            'extraArgs: ["--verbose", "./extra.md"]',
+          ].join("\n"),
+        );
+
+        expect(sessionSettingsArgs(persona)).toEqual([
+          "--model",
+          "claude-sonnet-4",
+          "--thinking",
+          "high",
+          "--tools",
+          "read,bash",
+          "-nc",
+          "-ns",
+          "-ne",
+          "--verbose",
+          "/definitions/personas/extra.md",
+        ]);
+      });
+
+      it("accepts tools as one whitespace-padded string", () => {
+        expect(sessionSettingsArgs(definition('tools: "read, bash"'))).toEqual([
+          "--tools",
+          "read,bash",
+        ]);
+      });
+
+      it("adds no flag for a truthy inheritance setting and none when settings are absent", () => {
+        expect(
+          sessionSettingsArgs(
+            definition(
+              "inheritProjectContext: true\ninheritSkills: true\ninheritExtensions: true",
+            ),
+          ),
+        ).toEqual([]);
+        expect(sessionSettingsArgs(definition("description: plain"))).toEqual([]);
+      });
+
+      it("takes extensions: false as the -ne shorthand", () => {
+        expect(sessionSettingsArgs(definition("extensions: false"))).toEqual(["-ne"]);
+      });
+
+      it("splits extraArgs and resolves ~/ against HOME and ./ ../ against the definition directory", () => {
+        const home = process.env.HOME ?? "";
+        expect(home).toBeTruthy();
+
+        expect(
+          sessionSettingsArgs(
+            definition('extraArgs: "--flag ~/notes.md ../shared.md plain.md"', DEFINITION_DIR),
+          ),
+        ).toEqual(["--flag", `${home}/notes.md`, "/definitions/shared.md", "plain.md"]);
+      });
     });
   });
 
