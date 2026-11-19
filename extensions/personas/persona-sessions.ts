@@ -10,7 +10,7 @@ import { sessionSettingsArgs } from "./persona-session-args.js";
 // shortcut: hc plumbing (run/get/wait/send/read, last assistant text) is copied from
 // extensions/subagents/src/herdr.ts; extract a shared module when a third caller appears.
 
-export const PERSONA_REPLY_CUSTOM_TYPE = "persona-reply";
+const PERSONA_REPLY_CUSTOM_TYPE = "persona-reply";
 const SPAWN_SELECTED = "Spawn selected";
 const NEEDS_HERDR = "Persona sessions need herdr (HC_TERMINAL_ID is not set).";
 
@@ -21,7 +21,6 @@ export interface LiveSession {
   dir: string;
   /** hc turn counter up to which replies have been delivered. */
   deliveredTurn: number;
-  watching: boolean;
 }
 
 export interface PersonaSessionsOptions {
@@ -93,7 +92,9 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
       "pi", "--fork", forkFrom, "--session-dir", dir, ctx.isProjectTrusted() ? "-a" : "-na",
       ...sessionSettingsArgs(persona),
     ]);
-    live.set(persona.name, { persona: persona.name, id, terminal: address, dir, deliveredTurn: 0, watching: false });
+    const session: LiveSession = { persona: persona.name, id, terminal: address, dir, deliveredTurn: 0 };
+    live.set(persona.name, session);
+    void watch(session).catch(() => undefined);
   }
 
   async function sendTo(name: string, message: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -112,32 +113,36 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
       await sleep(options.pollMs * 2);
       sent = await pi.exec("hc", ["send", "--", session.terminal, text]);
     }
-    if (sent.code !== 0) return ctx.ui.notify(`Not delivered to ${name}: ${sent.stderr.trim()}`, "warning");
-    if (!session.watching) {
-      session.watching = true;
-      void watch(session).catch(() => undefined).finally(() => (session.watching = false));
-    }
+    if (sent.code !== 0) ctx.ui.notify(`Not delivered to ${name}: ${sent.stderr.trim()}`, "warning");
   }
 
-  /** Deliver a reply for every turn that ends, until the persona goes quiet, exits, or is killed. */
+  /**
+   * Watches a Persona session for its whole life: delivers a reply for every turn that ends
+   * and reports the session if its terminal dies. Stops once it is killed or has exited.
+   */
   async function watch(session: LiveSession): Promise<void> {
-    let asking = false;
+    let peeked = false;
+    let misses = 0;
     while (live.get(session.persona) === session) {
       const t = await hcJson(["get", session.terminal]).catch(() => undefined);
       if (live.get(session.persona) !== session) return;
+      // One failed hc call is not a dead terminal: only a reported end, or repeated failures.
+      if (!t && ++misses < 3) {
+        await sleep(options.pollMs);
+        continue;
+      }
       if (t?.state !== "live") return exited(session);
+      misses = 0;
       const state = t.status?.state;
       if (t.turn > session.deliveredTurn) {
         session.deliveredTurn = t.turn;
         reply(session, lastText(session.dir) || "(no text reply)");
-        if (state !== "working") return;
-        continue;
       }
       if (state === "blocked") {
-        if (!asking) await pi.exec("herdr-app", ["do", "terminal.peek", "--terminal", session.terminal]);
-        asking = true;
+        if (!peeked) await pi.exec("herdr-app", ["do", "terminal.peek", "--terminal", session.terminal]);
+        peeked = true;
       } else {
-        asking = false;
+        peeked = false;
         await pi.exec("hc", ["wait", session.terminal, "--timeout", "60"]);
       }
       await sleep(options.pollMs);

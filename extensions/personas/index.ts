@@ -157,7 +157,7 @@ export default function personasExtension(
         await sessions.spawn(spawnable, ctx);
         return;
       }
-      const sendTo = /^send-to(?:\s+(\S+))?\s*([\s\S]*)$/.exec(input);
+      const sendTo = /^send-to(?:\s+(\S+)\s*([\s\S]*))?$/.exec(input);
       if (sendTo) {
         if (!sendTo[1]) {
           ctx.ui.notify("Usage: /persona send-to <persona> [message]", "warning");

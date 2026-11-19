@@ -1414,6 +1414,7 @@ Current working directory: /tmp/test-project`,
       const calls: string[][] = [];
       let next = 1;
       let unavailable = 0;
+      let failGets = 0;
       fake.pi.exec.mockImplementation(async (cmd: string, args: string[]) => {
         calls.push([cmd, ...args]);
         const ok = (out: unknown = {}) => ({ code: 0, stdout: JSON.stringify(out), stderr: "", killed: false });
@@ -1426,6 +1427,10 @@ Current working directory: /tmp/test-project`,
           return ok({ address });
         }
         if (sub === "get") {
+          if (failGets > 0) {
+            failGets--;
+            return { code: 1, stdout: "", stderr: "socket hiccup", killed: false };
+          }
           const t = terminals.get(target);
           return t ? ok({ state: t.state, turn: t.turn, status: { state: t.status } }) : { code: 1, stdout: "", stderr: "no terminal", killed: false };
         }
@@ -1441,7 +1446,7 @@ Current working directory: /tmp/test-project`,
         if (sub === "read") return { code: 0, stdout: terminals.get(target)?.screen ?? "", stderr: "", killed: false };
         return ok();
       });
-      return { terminals, calls, failSendsWhileBooting: (n: number) => { unavailable = n; } };
+      return { terminals, calls, failSendsWhileBooting: (n: number) => { unavailable = n; }, failNextGets: (n: number) => { failGets = n; } };
     }
 
     function spawnArgv(calls: string[][]) {
@@ -1627,6 +1632,52 @@ Current working directory: /tmp/test-project`,
 
       await spawn(fake, cwd, ["contrarian"]);
       expect(spawnArgv(hc.calls)).toHaveLength(2);
+    });
+
+    it("reports a persona that dies before anything was sent to it", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      Object.assign(hc.terminals.get("t1")!, { state: "finished", screen: "Error: unknown model" });
+      await vi.waitFor(() =>
+        expect(fake.messages.find((m) => m.customType === "persona-reply")?.content).toContain("contrarian exited"),
+      );
+    });
+
+    it("keeps a session alive through a transient hc get failure", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      const t = hc.terminals.get("t1")!;
+      hc.failNextGets(2);
+      await run(fake, "send-to contrarian still there?", cwd);
+      writeReply(spawnArgv(hc.calls)[0], "Yes.");
+      Object.assign(t, { turn: 1, status: "done" });
+      await vi.waitFor(() =>
+        expect(fake.messages.find((m) => m.customType === "persona-reply")?.content).toBe("contrarian: Yes."),
+      );
+    });
+
+    it("delivers one reply per finished turn, including a turn that ends while the next is running", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian first", cwd);
+      writeReply(spawnArgv(hc.calls)[0], "One.");
+      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "working" });
+      await vi.waitFor(() => expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(1));
+      writeReply(spawnArgv(hc.calls)[0], "Two.");
+      Object.assign(hc.terminals.get("t1")!, { turn: 2, status: "done" });
+      await vi.waitFor(() =>
+        expect(fake.messages.filter((m) => m.customType === "persona-reply").map((m) => m.content)).toEqual([
+          "contrarian: One.",
+          "contrarian: Two.",
+        ]),
+      );
+    });
+
+    it("matches send-to only as a whole word, so a persona named send-tox still switches", async () => {
+      const { fake, cwd, globalDir } = sessionSetup();
+      writePersonaDefinition(globalDir, "send-tox", { name: "send-tox" }, "Tox.");
+      await run(fake, "send-tox", cwd);
+      expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nTox.` });
     });
 
     it("refuses spawn and send-to outside herdr, while live switching still works", async () => {
