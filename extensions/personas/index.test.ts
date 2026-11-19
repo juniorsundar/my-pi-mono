@@ -1108,6 +1108,12 @@ Current working directory: /tmp/test-project`,
   describe("persona session child mode", () => {
     // Child mode is triggered by the PI_PERSONA_SESSION marker, injected here
     // through the factory options instead of process.env.
+    // The fork's history is the main agent's, so the child is told who it is.
+    const identity = (name: string) =>
+      `\n\nYou are the ${name} Persona session: a separate pi forked from the main session's conversation. ` +
+      "The conversation above is the main agent's work, not yours to continue or check. " +
+      'The user consults you from the main session; their messages arrive prefixed "Message from the user in the main session:". ' +
+      `Reply to each one as ${name}, with your own view.`;
     it("activates the marker persona and ignores a restored persona-state entry", async () => {
       const globalDir = makeGlobalDir();
       writePersonaDefinition(globalDir, "mentor", { name: "mentor" }, "Mentor the user.");
@@ -1119,7 +1125,7 @@ Current working directory: /tmp/test-project`,
 
       expect(setStatus).toHaveBeenCalledWith("persona", "persona:reviewer");
       expect(beforeAgentStart(fake)).toEqual({
-        systemPrompt: `${BUILT_IN_PROMPT}\n\nReview skeptically.`,
+        systemPrompt: `${BUILT_IN_PROMPT}\n\nReview skeptically.${identity("reviewer")}`,
       });
       expect(fake.messages).toHaveLength(0);
       expect(notify).not.toHaveBeenCalled();
@@ -1151,7 +1157,7 @@ Current working directory: /tmp/test-project`,
         createContext().ctx,
       ) as { systemPrompt: string };
       expect(result.systemPrompt).toBe(
-        "Be a ghost.\nCurrent working directory: /tmp/test-project",
+        `Be a ghost.\nCurrent working directory: /tmp/test-project${identity("ghost")}`,
       );
       expect(result.systemPrompt).not.toContain(BUILT_IN_PROMPT);
     });
@@ -1171,7 +1177,7 @@ Current working directory: /tmp/test-project`,
         expect(ui.confirm).not.toHaveBeenCalled();
         expect(ui.select).not.toHaveBeenCalled();
         expect(beforeAgentStart(fake)).toEqual({
-          systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.`,
+          systemPrompt: `${BUILT_IN_PROMPT}\n\nMentor the user.${identity("mentor")}`,
         });
         expect(fake.entries).toHaveLength(0);
       },
@@ -1500,7 +1506,7 @@ Current working directory: /tmp/test-project`,
       expect(id).toMatch(/^mentor-[0-9a-f]{4}$/);
       expect(call.slice(0, sep)).toEqual(["hc", "run", "--bg", "--json", "--no-notify", "--name", id, "--cwd", cwd, "--parent", "t59"]);
       expect(call.slice(sep + 1)).toEqual([
-        "env", "PI_PERMISSION_PROFILE=yolo", "PI_PERSONA_SESSION=mentor",
+        "env", `PATH=${process.env.PATH}`, "PI_PERMISSION_PROFILE=yolo", "PI_PERSONA_SESSION=mentor",
         "pi", "--fork", "/tmp/main.jsonl", "--session-dir", join(cwd, ".pi", "persona-sessions", id), "-a",
         "--model", "anthropic/claude-x", "--tools", "read,bash",
       ]);

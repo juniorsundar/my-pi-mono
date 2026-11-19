@@ -32,7 +32,8 @@ Things to know:
 - **Subcommands win.** A persona named `spawn`, `send-to` or `kill` can only be switched to from the picker.
 - **Layout.** Each session lives in `.pi/persona-sessions/<persona>-<hex>/` (gitignored). The transcript stays there after the session ends.
 - **The fork is a snapshot.** Main-session turns after the spawn are invisible to the persona.
-- **No nesting.** Inside a Persona session `/persona` is refused. Subagents still work.
+- **Identity.** The fork carries the main agent's history, so a Persona session's system prompt also tells it that it is a separate session, that the conversation so far is the main agent's work, and that the user's messages arrive with the prefix above.
+- **No nesting.** Inside a Persona session `/persona` is refused. Subagents still work: the session inherits the main session's `PATH`, because hc starts programs with herdr's own `PATH`, which may not include `hc`.
 
 ## Persona definitions
 

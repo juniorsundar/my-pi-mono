@@ -10,6 +10,8 @@ import { sessionSettingsArgs } from "./persona-session-args.js";
 // shortcut: hc plumbing (run/get/wait/send/read, last assistant text) is copied from
 // extensions/subagents/src/herdr.ts; extract a shared module when a third caller appears.
 
+/** Marks a send-to message as the user's: hc itself only tags it with the sending terminal. */
+export const USER_MESSAGE_PREFIX = "Message from the user in the main session:";
 const PERSONA_REPLY_CUSTOM_TYPE = "persona-reply";
 const SPAWN_SELECTED = "Spawn selected";
 const NEEDS_HERDR = "Persona sessions need herdr (HC_TERMINAL_ID is not set).";
@@ -88,7 +90,8 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     writeFileSync(join(root, ".gitignore"), "*\n"); // transcripts stay out of git
     const { address } = await hcJson([
       "run", "--bg", "--json", "--no-notify", "--name", id, "--cwd", ctx.cwd, "--parent", options.terminalId,
-      "--", "env", "PI_PERMISSION_PROFILE=yolo", `PI_PERSONA_SESSION=${persona.name}`,
+      // hc starts programs with herdr's PATH, which may lack hc itself; the child needs hc for subagents.
+      "--", "env", `PATH=${process.env.PATH ?? ""}`, "PI_PERMISSION_PROFILE=yolo", `PI_PERSONA_SESSION=${persona.name}`,
       "pi", "--fork", forkFrom, "--session-dir", dir, ctx.isProjectTrusted() ? "-a" : "-na",
       ...sessionSettingsArgs(persona),
     ]);
@@ -106,8 +109,7 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     }
     const typed = message.trim() || (await ctx.ui.input(`Message to ${name}`))?.trim();
     if (!typed) return;
-    // hc only tags it `<hc from="tNN">`; without this the persona can't tell the user is talking to it.
-    const text = `Message from the user in the main session: ${typed}`;
+    const text = `${USER_MESSAGE_PREFIX} ${typed}`;
     // No --if: a persona mid-turn takes the message as a steer.
     let sent = await pi.exec("hc", ["send", "--", session.terminal, text]);
     // hc refuses input while pi is still booting ("unavailable"): nothing was typed, so retrying is safe.

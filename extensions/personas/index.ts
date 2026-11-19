@@ -13,7 +13,7 @@ import {
   type FailedPersona,
   type PersonaDirectories,
 } from "./persona-store.js";
-import { createPersonaSessions } from "./persona-sessions.js";
+import { createPersonaSessions, USER_MESSAGE_PREFIX } from "./persona-sessions.js";
 
 export type PersonasExtensionOptions = PersonaDirectories & {
   /** Persona session marker (PI_PERSONA_SESSION): set when this process is a spawned Persona session. */
@@ -296,8 +296,19 @@ export default function personasExtension(
 
   pi.on("before_agent_start", (event) => {
     if (!activePersona) return undefined;
-    return { systemPrompt: composeSystemPrompt(event, activePersona) };
+    const prompt = composeSystemPrompt(event, activePersona);
+    // The forked history is the main agent's; without this the persona carries on as the main agent.
+    return { systemPrompt: personaSession ? `${prompt}\n\n${personaSessionIdentity(activePersona.name)}` : prompt };
   });
+}
+
+function personaSessionIdentity(name: string): string {
+  return (
+    `You are the ${name} Persona session: a separate pi forked from the main session's conversation. ` +
+    "The conversation above is the main agent's work, not yours to continue or check. " +
+    `The user consults you from the main session; their messages arrive prefixed "${USER_MESSAGE_PREFIX}". ` +
+    `Reply to each one as ${name}, with your own view.`
+  );
 }
 
 function appendModePrompt(builtInPrompt: string, persona: PersonaDefinition): string {
