@@ -1680,6 +1680,94 @@ Current working directory: /tmp/test-project`,
       expect(beforeAgentStart(fake)).toEqual({ systemPrompt: `${BUILT_IN_PROMPT}\n\nTox.` });
     });
 
+    it("kill ends the terminal at once and drops the persona from the live set", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      const { notify } = await run(fake, "kill contrarian", cwd);
+      expect(hc.calls).toContainEqual(["hc", "kill", "t1"]);
+      expect(hc.calls).toContainEqual(["hc", "rm", "t1"]);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("Killed"), "info");
+      const again = await run(fake, "send-to contrarian hi", cwd);
+      expect(again.notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
+    });
+
+    it("delivers nothing for a turn that was in flight when the persona was killed", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      await run(fake, "send-to contrarian think hard", cwd);
+      await run(fake, "kill contrarian", cwd);
+      writeReply(spawnArgv(hc.calls)[0], "Late.");
+      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(0);
+    });
+
+    it("kill of a persona that is not live is refused, and kill needs a name", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      const a = await run(fake, "kill contrarian", cwd);
+      const b = await run(fake, "kill", cwd);
+      expect(a.notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
+      expect(b.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /persona kill"), "warning");
+      expect(hc.calls.some((c) => c[1] === "kill")).toBe(false);
+    });
+
+    it("kill outside herdr is refused", async () => {
+      const { fake, hc, cwd } = sessionSetup({ terminalId: "" });
+      const { notify } = await run(fake, "kill contrarian", cwd);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("need herdr"), "warning");
+      expect(hc.calls).toHaveLength(0);
+    });
+
+    it("session shutdown kills every live Persona session", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian", "mentor"]);
+      const [shutdown] = getHandlers(fake, "session_shutdown");
+      await shutdown({ type: "session_shutdown", reason: "quit" }, createContext({ cwd }).ctx);
+      expect(hc.calls.filter((c) => c[1] === "kill").map((c) => c[2]).sort()).toEqual(["t1", "t2"]);
+      expect(hc.calls.filter((c) => c[1] === "rm").map((c) => c[2]).sort()).toEqual(["t1", "t2"]);
+    });
+
+    it("nothing is restored on the next session start", async () => {
+      const { fake, hc, cwd } = sessionSetup();
+      await spawn(fake, cwd, ["contrarian"]);
+      const [shutdown] = getHandlers(fake, "session_shutdown");
+      await shutdown({ type: "session_shutdown", reason: "resume" }, createContext({ cwd }).ctx);
+      await sessionStart(fake, []).promise;
+      const runs = spawnArgv(hc.calls).length;
+      const { notify } = await run(fake, "send-to contrarian hi", cwd);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
+      expect(spawnArgv(hc.calls)).toHaveLength(runs);
+    });
+
+    describe("argument completions", () => {
+      function complete(fake: FakePi, prefix: string) {
+        const command = fake.commands.find((c) => c.name === "persona")!;
+        return command.options.getArgumentCompletions(prefix);
+      }
+
+      it("offers subcommands and persona names for /persona <tab>", async () => {
+        const { fake, cwd } = sessionSetup();
+        const { ctx } = createContext({ cwd });
+        await getHandlers(fake, "session_start")[0]({ type: "session_start", reason: "startup" }, ctx);
+        const values = (await complete(fake, "")).map((i: { value: string }) => i.value);
+        expect(values).toEqual(expect.arrayContaining(["spawn", "send-to ", "kill ", "off", "contrarian", "mentor"]));
+      });
+
+      it("filters top-level items by prefix", async () => {
+        const { fake } = sessionSetup();
+        const values = (await complete(fake, "s")).map((i: { value: string }) => i.value);
+        expect(values).toEqual(["spawn", "send-to "]);
+      });
+
+      it("send-to <tab> and kill <tab> offer only live Persona sessions", async () => {
+        const { fake, cwd } = sessionSetup();
+        await spawn(fake, cwd, ["contrarian"]);
+        expect((await complete(fake, "send-to ")).map((i: { value: string }) => i.value)).toEqual(["send-to contrarian "]);
+        expect((await complete(fake, "kill c")).map((i: { value: string }) => i.value)).toEqual(["kill contrarian"]);
+        expect(await complete(fake, "kill m")).toBeNull();
+      });
+    });
+
     it("refuses spawn and send-to outside herdr, while live switching still works", async () => {
       const { fake, hc, cwd } = sessionSetup({ terminalId: "" });
       const a = await run(fake, "spawn", cwd);

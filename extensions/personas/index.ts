@@ -138,8 +138,39 @@ export default function personasExtension(
     await switchToPersona(valid[index], ctx);
   }
 
+  // Completions get no context, so the cwd for resolving persona names is captured at session start.
+  let cwd = process.cwd();
+
+  function completions(prefix: string) {
+    if (personaSession) return null;
+    const live = /^(send-to|kill)\s+(\S*)$/.exec(prefix);
+    if (live) {
+      const [, sub, partial] = live;
+      // send-to keeps a trailing space so the message can be typed straight after.
+      const items = sessions
+        .liveNames()
+        .filter((name) => name.startsWith(partial))
+        .map((name) => ({ value: `${sub} ${name}${sub === "send-to" ? " " : ""}`, label: name }));
+      return items.length ? items : null;
+    }
+    if (/\s/.test(prefix)) return null;
+    const items = [
+      { value: "spawn", label: "spawn", description: "Spawn Persona sessions" },
+      { value: "send-to ", label: "send-to", description: "Message a live Persona session" },
+      { value: "kill ", label: "kill", description: "End a live Persona session" },
+      { value: "off", label: "off", description: DEFAULT_PICKER_LABEL },
+      ...resolvePersonas(options, cwd).validPersonas.map((persona) => ({
+        value: persona.name,
+        label: persona.name,
+        description: persona.description,
+      })),
+    ].filter((item) => item.value.startsWith(prefix));
+    return items.length ? items : null;
+  }
+
   pi.registerCommand("persona", {
-    description: "Switch the active persona, or consult one as a Persona session: /persona [<name>|off|spawn|send-to <persona> [message]]",
+    description: "Switch the active persona, or consult one as a Persona session: /persona [<name>|off|spawn|send-to <persona> [message]|kill <persona>]",
+    getArgumentCompletions: completions,
     handler: async (args, ctx) => {
       if (personaSession) {
         ctx.ui.notify(PERSONA_SESSION_COMMAND_NOTICE, "warning");
@@ -164,6 +195,15 @@ export default function personasExtension(
           return;
         }
         await sessions.sendTo(sendTo[1], sendTo[2], ctx);
+        return;
+      }
+      const kill = /^kill(?:\s+(\S+))?$/.exec(input);
+      if (kill) {
+        if (!kill[1]) {
+          ctx.ui.notify("Usage: /persona kill <persona>", "warning");
+          return;
+        }
+        await sessions.kill(kill[1], ctx);
         return;
       }
 
@@ -199,7 +239,12 @@ export default function personasExtension(
 
   // Restoring must not re-emit the switch notice — it is already part of the
   // restored session context from the original switch.
+  pi.on("session_shutdown", async () => {
+    await sessions.killAll();
+  });
+
   pi.on("session_start", async (_event, ctx) => {
+    cwd = ctx.cwd;
     replaceModeConfirmed = false;
     if (personaSession) {
       const { validPersonas } = resolvePersonas(options, ctx.cwd);

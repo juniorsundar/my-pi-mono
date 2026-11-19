@@ -116,6 +116,26 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     if (sent.code !== 0) ctx.ui.notify(`Not delivered to ${name}: ${sent.stderr.trim()}`, "warning");
   }
 
+  async function kill(name: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (needsHerdr(ctx)) return;
+    const session = live.get(name);
+    if (!session) return ctx.ui.notify(`No live Persona session "${name}".`, "warning");
+    await end(session);
+    ctx.ui.notify(`Killed Persona session ${name}.`, "info");
+  }
+
+  /** Ends every live Persona session: they belong to this main session. */
+  async function killAll(): Promise<void> {
+    await Promise.allSettled([...live.values()].map(end));
+  }
+
+  // Leaving the live set first is what stops the watcher from delivering an in-flight reply.
+  async function end(session: LiveSession): Promise<void> {
+    live.delete(session.persona);
+    await pi.exec("hc", ["kill", session.terminal]);
+    await pi.exec("hc", ["rm", session.terminal]);
+  }
+
   /**
    * Watches a Persona session for its whole life: delivers a reply for every turn that ends
    * and reports the session if its terminal dies. Stops once it is killed or has exited.
@@ -168,7 +188,7 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     );
   }
 
-  return { live, spawn, sendTo };
+  return { liveNames: () => [...live.keys()], spawn, sendTo, kill, killAll };
 }
 
 /** The persona's answer: the last assistant message with text in its session file. */

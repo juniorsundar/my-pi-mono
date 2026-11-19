@@ -1,6 +1,9 @@
 # Personas Package
 
-Live-switchable Personas for the pi coding agent's main agent: switch the Active persona via `/persona` and the system prompt changes for subsequent turns, while conversation history, model, thinking level, and tools stay untouched. A session with no persona active uses pi's built-in prompt.
+Personas for the pi coding agent, used two ways:
+
+- **Live switching**: switch the main agent's Active persona via `/persona` and the system prompt changes for subsequent turns, while conversation history, model, thinking level, and tools stay untouched. A session with no persona active uses pi's built-in prompt.
+- **Persona sessions** (inside herdr): spawn a persona as its own long-lived pi, forked from the current conversation, and message it from the main session. See [Persona sessions](#persona-sessions).
 
 ## Overview
 
@@ -9,6 +12,27 @@ Live-switchable Personas for the pi coding agent's main agent: switch the Active
 - `/persona off` (also `default`, `none`) — returns to pi's built-in prompt.
 - A Persona switch applies to subsequent turns only, persists across resume (and BTW forks), and is announced to the model in context by a Switch notice.
 - Switching waits for the agent to go idle and rejects otherwise. The first switch per session to a Replace mode Persona asks for confirmation.
+
+## Persona sessions
+
+A Persona session is a long-lived `pi` running one persona beside the main agent (ADR 0010). It needs herdr: outside it (`HC_TERMINAL_ID` unset), `spawn`, `send-to` and `kill` refuse, and live switching works as usual.
+
+- `/persona spawn` opens a toggle list: picking a persona toggles a ✓, and "Spawn selected" starts one session per ticked persona. Each session is forked from the main session's conversation at that moment, runs in a paneless hc terminal listed under the main agent in herdr's agents list, and has the persona as its Active persona. A persona that is already live is skipped: kill it and spawn again for a fresh fork.
+- `/persona send-to <persona> [message]` types the message into the session and returns at once. Without a message it asks for one. A message sent while the persona is still answering steers its current turn.
+- Each reply arrives in the main session as a `persona-reply` message (`contrarian: …`). It does not start a main-agent turn, but the main agent sees it on its next turn. Steering twice during one turn gives one reply.
+- A session waiting on a dialog floats over the tab. A session that dies on its own is reported with the last lines of its screen and can be spawned again.
+- `/persona kill <persona>` ends a session at once. A reply still in flight is discarded.
+- `/persona send-to <tab>` and `/persona kill <tab>` complete the names of live sessions; `/persona <tab>` completes the subcommands and persona names.
+- Every session is killed when the main session shuts down (quit, `/new`, `/resume`, reload, fork). Nothing is restored on resume.
+
+Things to know:
+
+- **Shared working tree, no approvals.** Sessions run under `PI_PERMISSION_PROFILE=yolo` with the tools their Session settings allow (by default, the full set). The mutation extension's hard blocks still apply, but nothing stops a persona and the main agent from editing the same file at the same time.
+- **Trust.** Session settings become pi argv, so personas from the Project persona directory are left out of the spawn list in untrusted projects. Live switching to them still works.
+- **Subcommands win.** A persona named `spawn`, `send-to` or `kill` can only be switched to from the picker.
+- **Layout.** Each session lives in `.pi/persona-sessions/<persona>-<hex>/` (gitignored). The transcript stays there after the session ends.
+- **The fork is a snapshot.** Main-session turns after the spawn are invisible to the persona.
+- **No nesting.** Inside a Persona session `/persona` is refused. Subagents still work.
 
 ## Persona definitions
 

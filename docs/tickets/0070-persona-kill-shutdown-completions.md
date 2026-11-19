@@ -12,13 +12,13 @@ Spec 0013 — Persona Sessions: consult personas as forked herdr sessions
 
 ### Acceptance criteria
 
-- [ ] `kill` argv and live-set removal; no `persona-reply` after a kill mid-turn
-- [ ] Shutdown kills all live sessions; nothing restored on the next `session_start`
-- [ ] Completions as described, live names only for `send-to` and `kill`
-- [ ] A persona named like a subcommand is reachable via the picker only, as documented
-- [ ] `kill` outside herdr refuses
-- [ ] README updated using the CONTEXT.md vocabulary (Persona session, Session settings)
-- [ ] vitest and typecheck pass
+- [x] `kill` argv and live-set removal; no `persona-reply` after a kill mid-turn
+- [x] Shutdown kills all live sessions; nothing restored on the next `session_start`
+- [x] Completions as described, live names only for `send-to` and `kill`
+- [x] A persona named like a subcommand is reachable via the picker only, as documented
+- [x] `kill` outside herdr refuses
+- [x] README updated using the CONTEXT.md vocabulary (Persona session, Session settings)
+- [x] vitest and typecheck pass
 
 ### Blocked by
 
