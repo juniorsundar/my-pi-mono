@@ -25,8 +25,8 @@ The watcher stays in personas and keeps its current behaviour:
 
 ### Acceptance criteria
 
-- [ ] `persona-sessions.ts` has no `hc` or `herdr-app` strings, and `persona-session-args.ts` is gone
-- [ ] Persona session behaviour is unchanged: spawn, already-live skip, send-to with no `--if`, reply delivery, tolerating failed checks, peek on blocked, exit notice with screen tail, kill, and killing everything at shutdown
-- [ ] Persona tests use the library fake and do not parse `hc` argv
-- [ ] Persona tests are shorter overall, and the removed coverage is covered by `herdr.test.ts`
-- [ ] `npm test` and `npm run typecheck` pass
+- [x] `persona-sessions.ts` has no `hc` or `herdr-app` strings, and `persona-session-args.ts` is gone
+- [x] Persona session behaviour is unchanged: spawn, already-live skip, send-to with no `--if`, reply delivery, tolerating failed checks, peek on blocked, exit notice with screen tail, kill, and killing everything at shutdown
+- [x] Persona tests use the library fake and do not parse `hc` argv
+- [x] Persona tests are shorter overall (net -186 lines across personas), and the removed coverage is covered by `herdr.test.ts`
+- [x] `npm test` and `npm run typecheck` pass (typecheck: only the pre-existing `extensions/fold` errors remain)
