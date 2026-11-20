@@ -59,6 +59,10 @@ Delegates bounded work from the main pi agent to disposable child agents (scout,
 
 Two backends share the `subagent` tool name and the agent definitions; `extensions/subagents/index.ts` picks one at load. Inside herdr (`HC_TERMINAL_ID` set) `src/herdr.ts` runs each subagent as an interactive `pi` in an hc terminal, with `/subagent check` to reopen one. Elsewhere `src/index.ts` runs headless child processes; everything below describes that backend.
 
+**Herdr Terminal**:
+A `pi` running in a paneless hc terminal listed under the main agent in herdr's agents list. Herdr-backend subagents and Persona sessions are both Herdr Terminals; they differ only in lifetime and in how their replies are collected.
+_Avoid_: pane, hc session, herdr pane
+
 ### Core concepts
 
 **Subagent**:
