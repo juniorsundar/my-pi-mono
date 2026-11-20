@@ -60,6 +60,16 @@ describe("startPi", () => {
   });
 });
 
+describe("find", () => {
+  it("returns a handle at hc's address for a known name, and undefined when hc get fails", async () => {
+    const { exec, calls } = fakeExec({ "hc get": [{ stdout: JSON.stringify({ address: "t9", state: "exited" }) }, { code: 1 }] });
+    const herdr = createHerdr(exec);
+    expect((await herdr.find("scout-ab12"))?.address).toBe("t9");
+    expect(await herdr.find("gone")).toBeUndefined();
+    expect(calls).toEqual([["hc", "get", "scout-ab12"], ["hc", "get", "gone"]]);
+  });
+});
+
 async function started(script: Record<string, Reply | Reply[]> = {}) {
   const fake = fakeExec({ "hc run": RUN_OK, ...script });
   const terminal = await createHerdr(fake.exec, { retryMs: 0 }).startPi({ name: "n", cwd: "/", parent: "t1", env: {}, piArgs: [] });

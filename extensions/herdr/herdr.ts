@@ -112,7 +112,13 @@ export function createHerdr(exec: Exec, { retryMs = 2000 }: HerdrOptions = {}) {
     };
   }
 
-  return { startPi };
+  /** The existing terminal called `name` (any state), or undefined if hc knows none. */
+  async function find(name: string): Promise<HerdrTerminal | undefined> {
+    const t = await hcJson(["get", name]).catch(() => undefined);
+    return t?.address ? terminal(t.address) : undefined;
+  }
+
+  return { startPi, find };
 }
 
 /**

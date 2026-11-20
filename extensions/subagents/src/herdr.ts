@@ -1,7 +1,7 @@
 // Subagents as interactive pi panes in herdr.
 //
-// Each subagent is a real `pi` in an hc terminal, shown as a pane in a
-// "subagents" tab of the parent's herdr space. Definitions come from
+// Each subagent is a real `pi` in a Herdr Terminal (../../herdr), listed under the parent
+// in herdr's agents list. Definitions come from
 // ~/.pi/agent/agents/*.md and, in trusted projects, <cwd>/.pi/agents/*.md.
 // Everything about a run lives in <cwd>/.pi/subagents/<id>/: the pi session,
 // system-prompt.md and meta.json.
@@ -13,11 +13,11 @@
 import { type ExtensionAPI, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { loadSubagentsEnabled } from "./config.js";
+import { createHerdr, lastText, newRunDir, piFlags, type Herdr, type HerdrTerminal } from "../../herdr/herdr.js";
 
 const TAB = "subagents";
 const DEFAULT_TIMEOUT_S = 1800;
@@ -74,18 +74,24 @@ function loadAgents(cwd: string, trusted: boolean): Map<string, Agent> {
       agents.delete(name);
       if (fm.enabled === false) continue;
       const tools = Array.isArray(fm.tools) ? fm.tools.join(",") : fm.tools;
+      const extraArgs = Array.isArray(fm.extraArgs) ? fm.extraArgs : typeof fm.extraArgs === "string" ? [fm.extraArgs] : [];
       agents.set(name, {
         name,
         description: String(fm.description ?? ""),
-        flags: [
-          ...(fm.model ? ["--model", String(fm.model)] : []),
-          ...(fm.thinking ? ["--thinking", String(fm.thinking)] : []),
-          ...(tools ? ["--tools", String(tools).replace(/\s+/g, "")] : []),
-          ...(fm.inheritProjectContext === false ? ["-nc"] : []),
-          ...(fm.inheritSkills === false || fm.skills === false ? ["-ns"] : []),
-          ...(fm.inheritExtensions === false || fm.extensions === false ? ["-ne"] : []),
-          ...extraArgs(fm, dir),
-        ],
+        // Paths in extraArgs resolve against `dir`, the agents folder.
+        flags: piFlags(
+          {
+            model: fm.model ? String(fm.model) : undefined,
+            thinking: fm.thinking ? String(fm.thinking) : undefined,
+            tools: tools ? String(tools).replace(/\s+/g, "") : undefined,
+            inheritProjectContext: fm.inheritProjectContext,
+            inheritSkills: fm.skills === false ? false : fm.inheritSkills,
+            inheritExtensions: fm.inheritExtensions,
+            extensions: fm.extensions,
+            extraArgs: extraArgs.map(String),
+          },
+          dir,
+        ),
         prompt: body.trim(),
         promptFlag: String(fm.systemPromptMode).toLowerCase() === "append" ? "--append-system-prompt" : "--system-prompt",
         timeout: typeof fm.timeout === "number" ? fm.timeout : DEFAULT_TIMEOUT_S,
@@ -93,19 +99,6 @@ function loadAgents(cwd: string, trusted: boolean): Map<string, Agent> {
     }
   }
   return agents;
-}
-
-/** Literal pi flags from frontmatter; paths resolve against `dir` (agents dir), `~/` against HOME. */
-function extraArgs(fm: Record<string, any>, dir: string): string[] {
-  const raw = Array.isArray(fm.extraArgs) ? fm.extraArgs : typeof fm.extraArgs === "string" ? [fm.extraArgs] : [];
-  const home = process.env.HOME ?? "";
-  return raw.flatMap((item) => String(item).split(/\s+/).filter(Boolean)).map((arg) =>
-    arg.startsWith("~/") && home
-      ? path.join(home, arg.slice(2))
-      : arg.startsWith("./") || arg.startsWith("../")
-        ? path.resolve(dir, arg)
-        : arg,
-  );
 }
 
 function age(created: number): string {
@@ -121,7 +114,7 @@ function report(r: Rec): string {
   return `Subagent "${r.title}" (${r.agent}, id ${r.id}): ${r.status}${note}${r.result ? `\n\n${label}${r.result}` : ""}`;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, { herdr = createHerdr(pi.exec) }: { herdr?: Herdr } = {}) {
   const me = process.env.HC_TERMINAL_ID ?? "";
   // Outside herdr there is nowhere to put panes; inside a subagent (either kind), no nesting.
   if (!me || process.env[CHILD_ENV] === "1" || process.env.PI_SUBAGENT_CHILD === "1") return;
@@ -130,7 +123,8 @@ export default function (pi: ExtensionAPI) {
 
   let cwd = "";
   let closed = false;
-  const open = new Map<string, Rec>(); // terminals this session started and has not ended
+  // Terminals this session started and has not ended, by address.
+  const open = new Map<string, { rec: Rec; terminal: HerdrTerminal }>();
 
   const root = () => path.join(cwd || process.cwd(), ".pi", TAB);
   const dirOf = (id: string) => path.join(root(), id);
@@ -153,54 +147,12 @@ export default function (pi: ExtensionAPI) {
     return ids.map(load).filter((r): r is Rec => !!r).sort((a, b) => b.created - a.created);
   }
 
-  function sessionFile(id: string): string | undefined {
-    const file = fs.readdirSync(dirOf(id)).filter((f) => f.endsWith(".jsonl")).sort().pop();
-    return file && path.join(dirOf(id), file);
-  }
-
-  /** The subagent's answer: its last assistant message that has text. */
-  function lastText(id: string): string {
-    const file = sessionFile(id);
-    const lines = file ? fs.readFileSync(file, "utf8").trim().split("\n") : [];
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const m = JSON.parse(lines[i]).message;
-        if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
-        const text = m.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
-        if (text) return text;
-      } catch {
-        // a half-written last line
-      }
-    }
-    return "";
-  }
-
-  async function run(cmd: string, args: string[]): Promise<any> {
-    const r = await pi.exec(cmd, args);
-    if (r.code !== 0) throw new Error(`${cmd} ${args[0]} failed: ${(r.stderr || r.stdout).trim()}`);
-    return JSON.parse(r.stdout);
-  }
-
-  // Subagents have no pane: they float over the tab when they need the user, or when clicked in the agents list.
-  const focus = (terminal: string) => pi.exec("herdr-app", ["do", "terminal.peek", "--terminal", terminal]);
-
-  async function close(terminal: string): Promise<void> {
-    await pi.exec("hc", ["kill", terminal]);
-    await pi.exec("hc", ["rm", terminal]);
-    open.delete(terminal);
-  }
-
   // No herdr.space/herdr.tab labels: herdr lists it under its parent (this terminal) without a pane.
-  async function openPane(name: string, piArgs: string[]): Promise<string> {
-    const { address } = await run("hc", [
-      "run", "--bg", "--json", "--no-notify", "--name", name, "--cwd", cwd, "--parent", me,
-      // Yolo keeps the mutation extension's hard blocks (protected paths, catastrophic shell) but
-      // skips its approval dialogs, which nobody answers in an unattended subagent.
-      // hc starts programs with herdr's own PATH, which lacks ~/.local/bin and the project's dev shell.
-      "--", "env", `PATH=${process.env.PATH ?? ""}`, `${CHILD_ENV}=1`, "PI_PERMISSION_PROFILE=yolo", "pi", ...piArgs,
-    ]);
-    return address as string;
-  }
+  // Subagents float over the tab (peek) when they need the user, or when clicked in the agents list.
+  // Yolo keeps the mutation extension's hard blocks (protected paths, catastrophic shell) but
+  // skips its approval dialogs, which nobody answers in an unattended subagent.
+  const startPi = (name: string, piArgs: string[]) =>
+    herdr.startPi({ name, cwd, parent: me, env: { [CHILD_ENV]: "1", PI_PERMISSION_PROFILE: "yolo" }, piArgs });
 
   /**
    * pi arguments for a subagent, for its first run and for /subagent check. Rebuilt from the agent
@@ -218,16 +170,14 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function spawn(agent: Agent, title: string, task: string, trusted: boolean): Promise<Rec> {
-    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 27) || "subagent";
-    const id = `${slug}-${randomBytes(2).toString("hex")}`; // hc names: a-z 0-9 - _, at most 32
-    fs.mkdirSync(dirOf(id), { recursive: true });
-    fs.writeFileSync(path.join(root(), ".gitignore"), "*\n"); // transcripts stay out of git
+    const { id } = newRunDir(root(), title, "subagent");
     const rec: Rec = { id, title, agent: agent.name, task, status: "running", created: Date.now() };
     save(rec);
     // pi reads a leading @ as a file attachment.
     const args = [...piArgs(id, agent, trusted), "--name", title, "--", task.replace(/^@/, "Task: @")];
-    rec.terminal = await openPane(id, args);
-    open.set(rec.terminal, rec);
+    const terminal = await startPi(id, args);
+    rec.terminal = terminal.address;
+    open.set(terminal.address, { rec, terminal });
     save(rec);
     return rec;
   }
@@ -237,29 +187,29 @@ export default function (pi: ExtensionAPI) {
    * `patient` waits through dialogs instead of returning "blocked" at the first one.
    */
   async function watch(rec: Rec, timeoutS: number, signal?: AbortSignal, patient = false): Promise<Rec> {
-    const terminal = rec.terminal!;
+    const terminal = open.get(rec.terminal!)!.terminal;
     const deadline = Date.now() + timeoutS * 1000;
     let status: Status;
     let asking = false;
     for (;;) {
-      const t = await run("hc", ["get", terminal]).catch(() => undefined);
-      const state = t?.status?.state;
-      if (t?.state !== "live") status = "exited";
+      const t = await terminal.state();
+      const state = t?.status;
+      if (!t?.live) status = "exited";
       else if (state === "blocked" && patient && !closed) {
-        if (!asking) await focus(terminal); // once per dialog
+        if (!asking) await terminal.peek(); // once per dialog
         asking = true;
         await sleep(2000);
         continue;
       } else if (state === "blocked" || state === "error") status = state;
       else if (t.turn > 0 && state !== "working") status = state === "done" ? "done" : "interrupted";
       else if (signal?.aborted) {
-        await pi.exec("hc", ["interrupt", terminal]);
+        await terminal.interrupt();
         status = "interrupted";
       } else if (Date.now() > deadline) status = "timeout";
       else {
         asking = false;
-        // hc wait returns at once while pi is still booting (idle, turn 0), hence the pause.
-        await pi.exec("hc", ["wait", terminal, "--timeout", "60"], { signal });
+        // wait returns at once while pi is still booting (idle, turn 0), hence the pause.
+        await terminal.wait(60, signal);
         await sleep(1000);
         continue;
       }
@@ -268,13 +218,14 @@ export default function (pi: ExtensionAPI) {
     if (closed) return rec; // session_shutdown owns the cleanup now
 
     rec.status = status;
-    rec.result = lastText(rec.id);
+    rec.result = lastText(dirOf(rec.id));
     if (status === "done" || status === "exited") {
       // A pi that died on startup (bad model, bad flag) leaves its reason on screen.
-      if (!rec.result) rec.result = (await pi.exec("hc", ["read", terminal])).stdout.trim().split("\n").slice(-15).join("\n");
-      await close(terminal);
+      if (!rec.result) rec.result = await terminal.screenTail();
+      await terminal.close();
+      open.delete(terminal.address);
     } else if (status !== "interrupted") {
-      await focus(terminal);
+      await terminal.peek();
     }
     save(rec);
     return rec;
@@ -335,15 +286,11 @@ export default function (pi: ExtensionAPI) {
           const rec = load(p.id ?? "");
           if (!rec) throw new Error(`No subagent with id "${p.id}".`);
           if (!p.message?.trim()) throw new Error("send needs a message.");
-          if (!rec.terminal || !open.has(rec.terminal)) return text(report(rec));
-          // --if working: never start a fresh turn in a subagent that is about to be closed.
-          let sent = await pi.exec("hc", ["send", "--if", "working", "--", rec.terminal, p.message]);
-          // hc refuses input while pi is still booting ("unavailable"): nothing was typed, so retrying is safe.
-          for (let i = 0; i < 15 && sent.code !== 0 && sent.stderr.includes('"unavailable"') && !signal?.aborted; i++) {
-            await sleep(2000);
-            sent = await pi.exec("hc", ["send", "--if", "working", "--", rec.terminal, p.message]);
-          }
-          return text(sent.code === 0 ? `Sent to ${rec.id}.` : `Not delivered to ${rec.id}: ${sent.stderr.trim()}`);
+          const terminal = rec.terminal && open.get(rec.terminal)?.terminal;
+          if (!terminal) return text(report(rec));
+          // ifWorking: never start a fresh turn in a subagent that is about to be closed.
+          const sent = await terminal.send(p.message, { ifWorking: true, signal });
+          return text(sent.ok ? `Sent to ${rec.id}.` : `Not delivered to ${rec.id}: ${sent.error}`);
         }
 
         const tasks = p.tasks?.length ? p.tasks : [{ agent: p.agent ?? "", title: p.title ?? "", task: p.task ?? "" }];
@@ -395,30 +342,29 @@ export default function (pi: ExtensionAPI) {
       const rec = load(id);
       if (!rec) return ctx.ui.notify(`No subagent "${id}"`, "error");
       try {
-        const live = await run("hc", ["get", id]).catch(() => undefined);
-        let terminal: string = live?.address;
-        if (live?.state !== "live") {
-          const file = sessionFile(id);
+        let terminal = await herdr.find(id);
+        if (!(await terminal?.state())?.live) {
+          const file = fs.readdirSync(dirOf(id)).filter((f) => f.endsWith(".jsonl")).sort().pop();
           if (!file) return ctx.ui.notify(`"${rec.title}" saved no session: ${rec.result ?? rec.status}`, "warning");
           const trusted = ctx.isProjectTrusted();
           const agent = loadAgents(ctx.cwd, trusted).get(rec.agent);
-          terminal = await openPane(id, [...piArgs(id, agent, trusted), "--session", file]);
-          open.set(terminal, rec); // closes with the parent, like any other subagent pane
-          await pi.exec("hc", ["wait", terminal, "--timeout", "20"]); // until pi is up, so herdr can focus it
+          terminal = await startPi(id, [...piArgs(id, agent, trusted), "--session", path.join(dirOf(id), file)]);
+          open.set(terminal.address, { rec, terminal }); // closes with the parent, like any other subagent pane
+          await terminal.wait(20); // until pi is up, so herdr can focus it
         }
-        await focus(terminal);
+        await terminal!.peek();
       } catch (e) {
         ctx.ui.notify(String(e), "error");
       }
     },
   });
 
-  // hc ends children with the parent *terminal*, which is the shell around pi, not pi itself.
+  // herdr ends children with the parent *terminal*, which is the shell around pi, not pi itself.
   pi.on("session_shutdown", async () => {
     closed = true;
     await Promise.allSettled(
-      [...open].map(async ([terminal, rec]) => {
-        await close(terminal);
+      [...open.values()].map(async ({ rec, terminal }) => {
+        await terminal.close();
         if (rec.status === "running") save({ ...rec, status: "killed" });
       }),
     );
