@@ -34,9 +34,9 @@ Nothing calls the library yet in this ticket.
 
 ### Acceptance criteria
 
-- [ ] `extensions/herdr/herdr.ts` (plus the fake) exists, has no `index.ts`, and is not loaded as an extension
-- [ ] `extensions/herdr/herdr.test.ts` checks against a fake `exec`: the `startPi` argv including PATH and env, `send` with and without `--if working`, the "unavailable" retry and its limit, `close` order, `screenTail`, and a failed `hc run` throwing
-- [ ] `lastText` tests: newest file, a half-written last line, and no text
-- [ ] `piFlags` tests: every flag, and resolution of `~/`, `./` and `../`
-- [ ] `newRunDir` tests: id format and length, and the `.gitignore`
-- [ ] `npm test` and `npm run typecheck` pass
+- [x] `extensions/herdr/herdr.ts` (plus the fake) exists, has no `index.ts`, and is not loaded as an extension
+- [x] `extensions/herdr/herdr.test.ts` checks against a fake `exec`: the `startPi` argv including PATH and env, `send` with and without `--if working`, the "unavailable" retry and its limit, `close` order, `screenTail`, and a failed `hc run` throwing
+- [x] `lastText` tests: newest file, a half-written last line, and no text
+- [x] `piFlags` tests: every flag, and resolution of `~/`, `./` and `../`
+- [x] `newRunDir` tests: id format and length, and the `.gitignore`
+- [x] `npm test` and `npm run typecheck` pass (typecheck: only the pre-existing `extensions/fold` errors remain, none in herdr)
