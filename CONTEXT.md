@@ -360,3 +360,21 @@ _Avoid_: Persona subagent, spawned persona, persona agent
 > **Dev**: Is the persona a subagent then?
 >
 > **Domain Expert**: No. Nothing is spawned. The main agent keeps its tools, its session, and its history; only its prompt profile changes.
+
+## Follow
+
+The link between a pi session and the editor beside it, so the user sees each change where it landed.
+
+### Language
+
+**Companion Editor**:
+The nvim that `nv` opens beside a pi session, linked to it through `NV_SOCKET`.
+_Avoid_: side editor, nvim pane, split editor
+
+**Follow Mode**:
+The Companion Editor jumping to the first changed line and column of each successful `edit` or `write` in the main session. It never moves while the user is typing in the editor, and never overwrites an unsaved buffer. Toggled with `/follow`.
+_Avoid_: auto-jump, sync mode, editor tracking
+
+### Flagged ambiguities
+
+None currently.
