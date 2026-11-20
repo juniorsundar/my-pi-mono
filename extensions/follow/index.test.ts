@@ -21,6 +21,9 @@ afterEach(() => {
 
 // A fake pi: records handlers and the nvim calls the extension makes through exec.
 function load(env: Record<string, string> = { NV_SOCKET: SOCKET }, exec = vi.fn(async () => ({ code: 0, stdout: "", stderr: "", killed: false }))) {
+  // Isolate from the env of whatever session runs the tests (a subagent or Persona session would
+  // otherwise make the extension inert).
+  for (const key of ["PI_SUBAGENT_CHILD", "PI_HERDR_SUBAGENT", "PI_PERSONA_SESSION"]) vi.stubEnv(key, "");
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
   const handlers = new Map<string, (event: any, ctx: any) => unknown>();
   const pi = { on: (name: string, handler: any) => handlers.set(name, handler), exec };

@@ -21,14 +21,14 @@ The end-to-end path from a successful `edit` or `write` in the main pi session t
 
 ### Acceptance criteria
 
-- [ ] Inside herdr, `nv` exports `NV_SOCKET`, and the Companion Editor listens on that socket; a leftover socket file doesn't stop it starting
-- [ ] Extension tests, using a fake `pi.exec` and temporary files, check the jump target for:
-  - [ ] an `edit` in the middle of a line (correct line and column)
-  - [ ] a `write` that overwrites an existing file
-  - [ ] a `write` that creates a new file
-  - [ ] a change that leaves the file the same (no jump)
-  - [ ] a failed or blocked call (no jump)
-- [ ] No `NV_SOCKET`: no handlers act and nothing is run
-- [ ] A failing or timed-out `nvim --server` call is silent
+- [x] Inside herdr, `nv` exports `NV_SOCKET`, and the Companion Editor listens on that socket; a leftover socket file doesn't stop it starting
+- [x] Extension tests, using a fake `pi.exec` and temporary files, check the jump target for:
+  - [x] an `edit` in the middle of a line (correct line and column)
+  - [x] a `write` that overwrites an existing file
+  - [x] a `write` that creates a new file
+  - [x] a change that leaves the file the same (no jump)
+  - [x] a failed or blocked call (no jump)
+- [x] No `NV_SOCKET`: no handlers act and nothing is run
+- [x] A failing or timed-out `nvim --server` call is silent
 - [ ] Checked once by hand in herdr: after an `edit` and a `write`, the Companion Editor shows the changed spot
-- [ ] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
+- [x] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
