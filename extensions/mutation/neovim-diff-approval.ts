@@ -47,6 +47,7 @@ export interface UiContext {
   ui: {
     confirm: (title: string, body: string) => Promise<boolean>;
     select: (title: string, options: string[]) => Promise<string | undefined>;
+    editor: (title: string, prefill?: string) => Promise<string | undefined>;
     notify: (message: string, level?: "info" | "warning" | "error") => void;
     custom: <T>(
       factory: (tui: any, theme: any, kb: any, done: (value: T) => void) => any,

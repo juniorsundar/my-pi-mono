@@ -271,16 +271,26 @@ A single Pi extension package that owns mutation-related policy and approval beh
 _Avoid_: Confirm mutating tools, permission profiles package, mutation folder split
 
 **Edit/Write Guard**:
-The user decision point for `edit` and `write` calls: a focus-grabbing selector offering Approve / Deny / Inspect-Edit in Neovim. Inline tool rendering is Pi's native preview; the package adds no preview UI of its own.
+The user decision point for `edit` and `write` calls: a focus-grabbing selector offering Approve / Deny / Inline Edit, plus Neovim Inspect-Edit when Neovim is available. Inline tool rendering is Pi's native preview; the package adds no preview UI of its own.
 _Avoid_: Approval Card, Pending Summary, Atomic Reveal, diff preview, Expand diff view
 
 **Plain Confirm Fallback**:
-The plain text confirmation used when a change cannot be previewed as a diff (binary, unreadable, or unsafe edit validation) or when Neovim is unavailable. No diff is generated in this path.
+The plain text confirmation used when a change cannot be previewed as a diff (binary, unreadable, or unsafe edit validation). No diff is generated in this path.
 _Avoid_: Error card, warning card
+
+**Inline Edit**:
+Editing the proposed bash command, or the proposed post-change file content, inside Pi's own editor before deciding. Always offered; needs no external program. Cancelling returns to the decision selector rather than denying.
+_Avoid_: Edit in Pi, TUI edit, fallback editor
+
+**Neovim Inspect-Edit**:
+The optional Neovim flow (side-by-side before/after diff for edit/write, script buffer for bash), offered only when `nvim` is on PATH.
+_Avoid_: Inspect/Edit (unqualified)
 
 **Bash Approval**:
 A user decision point for a shell command that may mutate files, shell state, or external system state. It is separate from the Edit/Write Guard because the thing being approved is a command, not a file content transition.
 _Avoid_: Confirm mutating tools, shell gate, bash permission prompt
+
+Bash Approval offers the same Approve / Deny / Inline Edit choices, plus Neovim Inspect-Edit when available. An edited command returns to the selector for an explicit approve and runs with an audit prefix.
 
 ### Flagged ambiguities
 

@@ -46,7 +46,9 @@ function makeInteractiveCtx(
   cwd: string,
   selectChoices: (string | undefined)[] = [],
   confirmResult?: boolean,
+  editorResults: (string | undefined)[] = [],
 ) {
+  const editor = vi.fn(async () => editorResults.shift());
   // Each select() call returns a promise. If a queued choice is available it
   // resolves immediately; otherwise the promise stays pending until
   // releaseSelect() is called (used to test concurrent approval gating).
@@ -97,9 +99,10 @@ function makeInteractiveCtx(
       select,
       notify: vi.fn(),
       custom,
+      editor,
     },
   };
-  return { ctx, select, releaseSelect, custom, confirm, notify: ctx.notify };
+  return { ctx, select, releaseSelect, custom, confirm, editor, notify: ctx.notify };
 }
 
 // Simulates the Neovim diff approval for edit/write: the module writes
@@ -270,7 +273,7 @@ describe("mutation tool_call approval wiring", () => {
     expect(result!.reason).toContain("input must be an object");
   });
 
-  it("approves write through the ui.select modal with the three-option guard", async () => {
+  it("approves write through the ui.select modal with the four-option guard", async () => {
     setCurrentProfile("ask");
     const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
     try {
@@ -288,7 +291,7 @@ describe("mutation tool_call approval wiring", () => {
       await expect(toolCallPromise).resolves.toBeUndefined();
       expect(select).toHaveBeenCalledWith(
         expect.stringContaining("Allow write target.txt?"),
-        ["Approve", "Deny", "Inspect-Edit in Neovim"],
+        ["Approve", "Deny", "Edit inline", "Inspect-Edit in Neovim"],
       );
       expect(ctx.ui.custom).not.toHaveBeenCalled();
       expect(input.content).toBe("after\n");
@@ -582,13 +585,13 @@ describe("mutation tool_call approval wiring", () => {
     }
   });
 
-  it("falls back to a plain confirm when Neovim is missing", async () => {
+  it("hides the Neovim option when nvim is missing", async () => {
     setCurrentProfile("ask");
     const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
     try {
       writeFileSync(join(cwd, "target.txt"), "before\n", "utf8");
       const { pi, handlers } = makePi();
-      const { ctx, select, confirm } = makeInteractiveCtx(cwd, ["Inspect-Edit in Neovim"], true);
+      const { ctx, select } = makeInteractiveCtx(cwd, ["Approve"]);
       mutationExtension(pi);
 
       commandExists.mockReturnValue(false);
@@ -599,13 +602,37 @@ describe("mutation tool_call approval wiring", () => {
       );
 
       await expect(toolCallPromise).resolves.toBeUndefined();
-      expect(select).toHaveBeenCalledTimes(1);
-      expect(ctx.ui.custom).not.toHaveBeenCalled();
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(ctx.ui.notify).toHaveBeenCalledWith(
-        expect.stringContaining("Neovim was not found"),
-        "warning",
+      expect(select).toHaveBeenCalledWith(expect.any(String), ["Approve", "Deny", "Edit inline"]);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("applies inline-edited content for edit calls, ignoring a cancelled edit", async () => {
+    setCurrentProfile("ask");
+    const cwd = mkdtempSync(join(process.cwd(), ".tmp-mutation-test-"));
+    try {
+      writeFileSync(join(cwd, "target.txt"), "one\ntwo\n", "utf8");
+      const { pi, handlers } = makePi();
+      const { ctx, select, editor } = makeInteractiveCtx(
+        cwd,
+        ["Edit inline", "Edit inline", "Approve"],
+        undefined,
+        ["one\nTWO!\n", undefined],
       );
+      mutationExtension(pi);
+
+      const input: Record<string, unknown> = {
+        path: "target.txt",
+        edits: [{ oldText: "two", newText: "TWO" }],
+      };
+      const toolCallPromise = handlers.tool_call![DIFF_HANDLER]!({ toolName: "edit", input }, ctx);
+
+      await expect(toolCallPromise).resolves.toBeUndefined();
+      expect(select).toHaveBeenCalledTimes(3);
+      expect(editor).toHaveBeenNthCalledWith(1, expect.any(String), "one\nTWO\n");
+      expect(editor).toHaveBeenNthCalledWith(2, expect.any(String), "one\nTWO!\n");
+      expect(input.edits).toEqual([{ oldText: "one\ntwo\n", newText: "one\nTWO!\n" }]);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

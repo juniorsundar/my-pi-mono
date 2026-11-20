@@ -85,7 +85,7 @@ describe("bash approval neovim integration", () => {
       {
         cwd: process.cwd(),
         hasUI: true,
-        ui: { select, notify, custom },
+        ui: { select, notify, custom, editor: vi.fn() },
       },
     );
 
@@ -101,5 +101,38 @@ describe("bash approval neovim integration", () => {
     const launchOptions = runNeovimWithArgsProcess.mock.calls[0]?.[0];
     expect(launchOptions?.windowTitlePrefix).toBe("pi bash");
     expect(launchOptions?.nvimArgs).toHaveLength(3);
+  });
+
+  it("edits inline without Neovim and approves with an audit prefix", async () => {
+    delete process.env.PI_PERMISSION_PROFILE;
+    setCurrentProfile("ask");
+    commandExists.mockReturnValue(false);
+    const { pi, handlers } = makePi();
+    registerBashApproval(pi);
+
+    const select = vi
+      .fn<(title: string, options: string[]) => Promise<string | undefined>>()
+      .mockResolvedValueOnce("Edit inline")
+      .mockResolvedValueOnce("Edit inline")
+      .mockResolvedValueOnce("Approve");
+    const editor = vi
+      .fn<() => Promise<string | undefined>>()
+      .mockResolvedValueOnce("echo bye\n")
+      .mockResolvedValueOnce(undefined);
+    const input = { command: "echo hi" };
+
+    const result = await handlers.tool_call![0]!(
+      { toolName: "bash", input },
+      { cwd: process.cwd(), hasUI: true, ui: { select, editor, notify: vi.fn(), custom: vi.fn() } },
+    );
+
+    expect(result).toBeUndefined();
+    expect(select.mock.calls[0]![1]).toEqual(["Approve", "Deny", "Edit inline"]);
+    expect(select.mock.calls[2]![0]).toContain("echo bye");
+    expect(editor).toHaveBeenNthCalledWith(1, expect.any(String), "echo hi");
+    expect(editor).toHaveBeenNthCalledWith(2, expect.any(String), "echo bye");
+    expect(input.command).not.toBe("echo hi");
+    expect(input.command).toContain("echo bye");
+    commandExists.mockImplementation((command: string) => command === "nvim");
   });
 });

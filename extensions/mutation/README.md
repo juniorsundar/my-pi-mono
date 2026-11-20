@@ -9,7 +9,10 @@ Every `bash`, `edit`, and `write` tool call passes through the permission
 policy (profiles: `safe` / `ask` / `yolo`). Calls that require confirmation
 stop at a focus-grabbing `ui.select` modal offering:
 
-    Approve / Deny / Inspect-Edit in Neovim
+    Approve / Deny / Edit inline / Inspect-Edit in Neovim
+
+"Edit inline" uses Pi's built-in editor (`ctx.ui.editor`) and needs no
+external program. The Neovim option is shown only when `nvim` is on PATH.
 
 Inline transcript rendering is Pi's native tool preview — this package
 registers no preview UI of its own (no diff cards, no overlays, no external
@@ -31,24 +34,26 @@ diff binaries).
 
 ### Bash
 
-`bash` calls stop at a `ui.select` modal: Approve / Deny / Inspect/Edit in
-Neovim. Inspect/Edit opens the command in a script buffer (`:Approve` /
+`bash` calls stop at a `ui.select` modal: Approve / Deny / Edit inline
+(+ Inspect/Edit in Neovim). Edit inline opens the command in Pi's editor;
+submitting returns to the modal showing the edited command, cancelling keeps
+the previous one. Inspect/Edit opens the command in a script buffer (`:Approve` /
 `:Deny`, or `<leader><leader>A` / `<leader><leader>D`); an edited command is
-approved with an audit prefix printed to stderr before execution. A missing
-`nvim` notifies and denies. Approvals for concurrent bash calls are
+approved with an audit prefix printed to stderr before execution (both edit paths). Approvals for concurrent bash calls are
 serialized.
 
 ### edit/write
 
 `edit`/`write` calls are intercepted in `tool_call`. Policy first (block /
-bypass / confirm), then a `ui.select` modal: Approve / Deny / Inspect-Edit in
-Neovim. Inspect-Edit opens `nvim -d` with before/after buffers; the after
+bypass / confirm), then a `ui.select` modal: Approve / Deny / Edit inline (+ Inspect-Edit in
+Neovim). Edit inline opens the proposed post-change file content in Pi's
+editor and loops back to the modal; cancelling keeps the current content.
+Inspect-Edit opens `nvim -d` with before/after buffers; the after
 buffer is editable, an approval loops back to the modal for a final explicit
 confirm, and the edited content is applied on approve (write: content
 replaced; edit: a single whole-file old/new edit pair). A Neovim deny is
 final. Binary, unreadable, or unsafe-to-validate targets skip Neovim and fall
-back to a plain text confirm; a missing `nvim` notifies and falls back the
-same way. A second mutation arriving while an approval is pending is denied.
+back to a plain text confirm. A second mutation arriving while an approval is pending is denied.
 
 ## Permission Profiles
 

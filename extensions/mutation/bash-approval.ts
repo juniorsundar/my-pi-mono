@@ -16,6 +16,7 @@ type UiContext = {
   ui: {
     confirm: (title: string, body: string) => Promise<boolean>;
     select: (title: string, options: string[]) => Promise<string | undefined>;
+    editor: (title: string, prefill?: string) => Promise<string | undefined>;
     notify: (message: string, level?: "info" | "warning" | "error") => void;
     custom: <T>(
       factory: (tui: any, theme: any, kb: any, done: (value: T) => void) => any,
@@ -75,30 +76,40 @@ async function approveBashCommand(
   input: unknown,
   ctx: UiContext,
 ): Promise<boolean> {
+  const originalCommand = isRecord(input) ? String(input.command ?? "") : "";
+  // Inline edits are held here and applied (with audit) only on final approve.
+  let editedCommand: string | undefined;
   while (true) {
-    const command = isRecord(input) ? String(input.command ?? "").trim() : "";
-    const choice = await ctx.ui.select(
-      `${detectBashRisks(command).length ? "⚠️" : "🛠️"} Allow shell command?`,
-      [
-      "Approve",
-      "Deny",
-      "Inspect/Edit in Neovim",
-    ]);
+    const command = (editedCommand ?? originalCommand).trim();
+    const options = ["Approve", "Deny", "Edit inline"];
+    if (commandExists("nvim")) options.push("Inspect/Edit in Neovim");
+    const title = `${detectBashRisks(command).length ? "⚠️" : "🛠️"} Allow ${
+      editedCommand === undefined ? "" : "edited "
+    }shell command?${editedCommand === undefined ? "" : `\n${command}`}`;
+    const choice = await ctx.ui.select(title, options);
 
     if (choice === "Approve") {
+      if (editedCommand !== undefined && isRecord(input)) {
+        input.command =
+          editedCommand === originalCommand
+            ? editedCommand
+            : withEditedBashCommandAudit(originalCommand, editedCommand);
+      }
       return true;
     }
 
-    if (choice === "Inspect/Edit in Neovim") {
-      if (!commandExists("nvim")) {
-        ctx.ui.notify("Neovim was not found; denying bash command.", "warning");
-        return false;
-      }
+    if (choice === "Edit inline") {
+      // Cancel (undefined) keeps the previous command and returns to the selector.
+      const edited = await ctx.ui.editor("Edit shell command", editedCommand ?? originalCommand);
+      if (edited !== undefined) editedCommand = edited.replace(/\s+$/, "");
+      continue;
+    }
 
+    if (choice === "Inspect/Edit in Neovim") {
+      if (editedCommand !== undefined && isRecord(input)) input.command = editedCommand;
       const result = await runNeovimBashApproval(ctx, input);
       if (result.decision === "approve") {
         if (typeof result.approvedCommand === "string" && isRecord(input)) {
-          const originalCommand = String(input.command ?? "");
           input.command =
             result.approvedCommand === originalCommand
               ? result.approvedCommand

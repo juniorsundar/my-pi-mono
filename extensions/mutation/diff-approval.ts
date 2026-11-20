@@ -4,7 +4,7 @@
  * Intercepts edit/write tool calls in tool_call and pauses until the user
  * picks an option from a focus-grabbing ui.select modal (mirroring bash
  * approval):
- *   Approve / Deny / Inspect-Edit in Neovim
+ *   Approve / Deny / Edit inline (+ Inspect-Edit in Neovim when nvim exists)
  * Pi's native tool previews render inline; the decision happens only in the
  * modal. Targets that cannot be rendered as a text diff (binary, unreadable,
  * unsafe edit validation) skip Neovim and fall back to a plain text confirm.
@@ -54,7 +54,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Plain text confirm for targets that cannot be previewed as a diff
-  // (binary, unreadable, unsafe edit validation, missing Neovim).
+  // (binary, unreadable, unsafe edit validation).
   async function plainConfirm(
     toolName: "edit" | "write",
     targetPath: string,
@@ -112,11 +112,9 @@ export default function (pi: ExtensionAPI) {
       // disabling the entry line, so an accidental A/D keystroke cannot
       // auto-accept or deny.
       while (true) {
-        const choice = await ctx.ui.select(`Allow ${toolName} ${targetPath}?`, [
-          "Approve",
-          "Deny",
-          "Inspect-Edit in Neovim",
-        ]);
+        const options = ["Approve", "Deny", "Edit inline"];
+        if (commandExists("nvim")) options.push("Inspect-Edit in Neovim");
+        const choice = await ctx.ui.select(`Allow ${toolName} ${targetPath}?`, options);
 
         if (choice === "Approve") {
           applyApprovedContent(toolName, input, before, currentAfter);
@@ -127,17 +125,14 @@ export default function (pi: ExtensionAPI) {
           return false;
         }
 
-        if (choice === "Inspect-Edit in Neovim") {
-          if (!commandExists("nvim")) {
-            ctx.ui.notify("Neovim was not found; falling back to a plain confirm.", "warning");
-            return await plainConfirm(
-              toolName,
-              targetPath,
-              "Neovim is not available for inspection.",
-              ctx,
-            );
-          }
+        if (choice === "Edit inline") {
+          // Cancel (undefined) keeps the current content and returns to the modal.
+          const edited = await ctx.ui.editor(`Edit ${toolName} ${targetPath}`, currentAfter);
+          if (edited !== undefined) currentAfter = edited;
+          continue;
+        }
 
+        if (choice === "Inspect-Edit in Neovim") {
           const result = await openNeovimForDiff(
             ctx,
             toolName,
