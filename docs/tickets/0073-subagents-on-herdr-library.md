@@ -31,5 +31,5 @@ The `watch` loop stays in subagents and keeps every status rule. New tests in `e
 - [x] `subagents/src/herdr.ts` has no `hc` or `herdr-app` strings
 - [x] Agent definition flags come from `piFlags`, and the definition format is unchanged
 - [x] The 4 `watch` tests above pass, and `entry.test.ts` still passes
-- [ ] Spot-checked once by hand in herdr: one blocking subagent and one background subagent complete
+- [x] Spot-checked once by hand in herdr: one blocking subagent and one background subagent complete (both scouts returned correct results; background result arrived as a message)
 - [x] `npm test` and `npm run typecheck` pass (typecheck: only the pre-existing `extensions/fold` errors remain)
