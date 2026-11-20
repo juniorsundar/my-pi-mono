@@ -36,6 +36,11 @@ export function createFakeHerdr() {
       calls.push([t.address, "startPi", start]);
       return handle(t);
     },
+    async find(name) {
+      calls.push([name, "find"]);
+      const t = terminals.find((t) => t.start.name === name);
+      return t && handle(t);
+    },
   };
 
   function handle(t: FakeTerminal): HerdrTerminal {
