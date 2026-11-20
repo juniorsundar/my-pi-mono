@@ -1,14 +1,10 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { createHerdr, lastText, newRunDir, piFlags, type Herdr, type HerdrTerminal } from "../herdr/herdr.js";
 import type { PersonaDefinition } from "./persona-definition-parser.js";
-import { sessionSettingsArgs } from "./persona-session-args.js";
 
-// Persona sessions: long-lived forked pi sessions in paneless hc terminals (ADR 0010).
-// shortcut: hc plumbing (run/get/wait/send/read, last assistant text) is copied from
-// extensions/subagents/src/herdr.ts; extract a shared module when a third caller appears.
+// Persona sessions: long-lived forked pi sessions in Herdr Terminals (ADR 0010).
 
 /** Marks a send-to message as the user's: hc itself only tags it with the sending terminal. */
 export const USER_MESSAGE_PREFIX = "Message from the user in the main session:";
@@ -19,7 +15,7 @@ const NEEDS_HERDR = "Persona sessions need herdr (HC_TERMINAL_ID is not set).";
 export interface LiveSession {
   persona: string;
   id: string;
-  terminal: string;
+  terminal: HerdrTerminal;
   dir: string;
   /** hc turn counter up to which replies have been delivered. */
   deliveredTurn: number;
@@ -30,16 +26,13 @@ export interface PersonaSessionsOptions {
   terminalId: string;
   /** Pause between hc polls. */
   pollMs: number;
+  /** Defaults to the real herdr library over pi.exec. */
+  herdr?: Herdr;
 }
 
 export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessionsOptions) {
   const live = new Map<string, LiveSession>();
-
-  async function hcJson(args: string[]): Promise<any> {
-    const r = await pi.exec("hc", args);
-    if (r.code !== 0) throw new Error(`hc ${args[0]} failed: ${(r.stderr || r.stdout).trim()}`);
-    return JSON.parse(r.stdout);
-  }
+  const herdr = options.herdr ?? createHerdr(pi.exec.bind(pi), { retryMs: options.pollMs * 2 });
 
   function needsHerdr(ctx: ExtensionCommandContext): boolean {
     if (options.terminalId) return false;
@@ -82,20 +75,18 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
   }
 
   async function spawnOne(persona: PersonaDefinition, forkFrom: string, ctx: ExtensionCommandContext) {
-    const slug = persona.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 27) || "persona";
-    const id = `${slug}-${randomBytes(2).toString("hex")}`; // hc names: a-z 0-9 - _, at most 32
-    const root = join(ctx.cwd, ".pi", "persona-sessions");
-    const dir = join(root, id);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(root, ".gitignore"), "*\n"); // transcripts stay out of git
-    const { address } = await hcJson([
-      "run", "--bg", "--json", "--no-notify", "--name", id, "--cwd", ctx.cwd, "--parent", options.terminalId,
-      // hc starts programs with herdr's PATH, which may lack hc itself; the child needs hc for subagents.
-      "--", "env", `PATH=${process.env.PATH ?? ""}`, "PI_PERMISSION_PROFILE=yolo", `PI_PERSONA_SESSION=${persona.name}`,
-      "pi", "--fork", forkFrom, "--session-dir", dir, ctx.isProjectTrusted() ? "-a" : "-na",
-      ...sessionSettingsArgs(persona),
-    ]);
-    const session: LiveSession = { persona: persona.name, id, terminal: address, dir, deliveredTurn: 0 };
+    const { id, dir } = newRunDir(join(ctx.cwd, ".pi", "persona-sessions"), persona.name, "persona");
+    const terminal = await herdr.startPi({
+      name: id,
+      cwd: ctx.cwd,
+      parent: options.terminalId,
+      env: { PI_PERMISSION_PROFILE: "yolo", PI_PERSONA_SESSION: persona.name },
+      piArgs: [
+        "--fork", forkFrom, "--session-dir", dir, ctx.isProjectTrusted() ? "-a" : "-na",
+        ...piFlags(persona.session, persona.directory),
+      ],
+    });
+    const session: LiveSession = { persona: persona.name, id, terminal, dir, deliveredTurn: 0 };
     live.set(persona.name, session);
     void watch(session).catch(() => undefined);
   }
@@ -109,15 +100,9 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     }
     const typed = message.trim() || (await ctx.ui.input(`Message to ${name}`))?.trim();
     if (!typed) return;
-    const text = `${USER_MESSAGE_PREFIX} ${typed}`;
-    // No --if: a persona mid-turn takes the message as a steer.
-    let sent = await pi.exec("hc", ["send", "--", session.terminal, text]);
-    // hc refuses input while pi is still booting ("unavailable"): nothing was typed, so retrying is safe.
-    for (let i = 0; i < 15 && sent.code !== 0 && sent.stderr.includes('"unavailable"'); i++) {
-      await sleep(options.pollMs * 2);
-      sent = await pi.exec("hc", ["send", "--", session.terminal, text]);
-    }
-    if (sent.code !== 0) ctx.ui.notify(`Not delivered to ${name}: ${sent.stderr.trim()}`, "warning");
+    // No ifWorking: a persona mid-turn takes the message as a steer.
+    const sent = await session.terminal.send(`${USER_MESSAGE_PREFIX} ${typed}`);
+    if (!sent.ok) ctx.ui.notify(`Not delivered to ${name}: ${sent.error}`, "warning");
   }
 
   async function kill(name: string, ctx: ExtensionCommandContext): Promise<void> {
@@ -136,8 +121,7 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
   // Leaving the live set first is what stops the watcher from delivering an in-flight reply.
   async function end(session: LiveSession): Promise<void> {
     live.delete(session.persona);
-    await pi.exec("hc", ["kill", session.terminal]);
-    await pi.exec("hc", ["rm", session.terminal]);
+    await session.terminal.close();
   }
 
   /**
@@ -148,26 +132,26 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
     let peeked = false;
     let misses = 0;
     while (live.get(session.persona) === session) {
-      const t = await hcJson(["get", session.terminal]).catch(() => undefined);
+      const t = await session.terminal.state();
       if (live.get(session.persona) !== session) return;
       // One failed hc call is not a dead terminal: only a reported end, or repeated failures.
       if (!t && ++misses < 3) {
         await sleep(options.pollMs);
         continue;
       }
-      if (t?.state !== "live") return exited(session);
+      if (!t?.live) return exited(session);
       misses = 0;
-      const state = t.status?.state;
+      const state = t.status;
       if (t.turn > session.deliveredTurn) {
         session.deliveredTurn = t.turn;
         reply(session, lastText(session.dir) || "(no text reply)");
       }
       if (state === "blocked") {
-        if (!peeked) await pi.exec("herdr-app", ["do", "terminal.peek", "--terminal", session.terminal]);
+        if (!peeked) await session.terminal.peek();
         peeked = true;
       } else {
         peeked = false;
-        await pi.exec("hc", ["wait", session.terminal, "--timeout", "60"]);
+        await session.terminal.wait(60);
       }
       await sleep(options.pollMs);
     }
@@ -175,8 +159,8 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
 
   async function exited(session: LiveSession): Promise<void> {
     live.delete(session.persona);
-    const screen = (await pi.exec("hc", ["read", session.terminal])).stdout.trim().split("\n").slice(-15).join("\n");
-    await pi.exec("hc", ["rm", session.terminal]);
+    const screen = await session.terminal.screenTail();
+    await session.terminal.remove();
     reply(session, `${session.persona} exited.${screen ? `\n\n${screen}` : ""}`, false);
   }
 
@@ -193,23 +177,6 @@ export function createPersonaSessions(pi: ExtensionAPI, options: PersonaSessions
   }
 
   return { liveNames: () => [...live.keys()], spawn, sendTo, kill, killAll };
-}
-
-/** The persona's answer: the last assistant message with text in its session file. */
-function lastText(dir: string): string {
-  const file = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().pop() : undefined;
-  const lines = file ? readFileSync(join(dir, file), "utf8").trim().split("\n") : [];
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const m = JSON.parse(lines[i]).message;
-      if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
-      const text = m.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n").trim();
-      if (text) return text;
-    } catch {
-      // a half-written last line
-    }
-  }
-  return "";
 }
 
 function label(persona: PersonaDefinition): string {

@@ -14,6 +14,7 @@ import {
   type PersonaDirectories,
 } from "./persona-store.js";
 import { createPersonaSessions, USER_MESSAGE_PREFIX } from "./persona-sessions.js";
+import type { Herdr } from "../herdr/herdr.js";
 
 export type PersonasExtensionOptions = PersonaDirectories & {
   /** Persona session marker (PI_PERSONA_SESSION): set when this process is a spawned Persona session. */
@@ -22,6 +23,8 @@ export type PersonasExtensionOptions = PersonaDirectories & {
   terminalId?: string;
   /** Pause between hc polls while waiting for a Persona session's reply. */
   pollMs?: number;
+  /** The herdr library Persona sessions run on; tests pass a fake. */
+  herdr?: Herdr;
 };
 
 const PERSONA_STATUS_KEY = "persona";
@@ -49,6 +52,7 @@ export default function personasExtension(
   const sessions = createPersonaSessions(pi, {
     terminalId: options.terminalId ?? process.env.HC_TERMINAL_ID ?? "",
     pollMs: options.pollMs ?? 1000,
+    herdr: options.herdr,
   });
 
   async function switchToPersona(persona: PersonaDefinition, ctx: ExtensionCommandContext): Promise<void> {

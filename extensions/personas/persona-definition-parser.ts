@@ -1,23 +1,11 @@
 import { parse as parseYaml } from "yaml";
+import type { PiSettings } from "../herdr/herdr.js";
 
 /**
  * Session settings shape a Persona session only; live switching never reads them.
- * They map to pi flags exactly as the agent definitions in
- * extensions/subagents/src/herdr.ts do.
+ * They become pi flags through piFlags in extensions/herdr, as agent definitions do.
  */
-export interface PersonaSessionSettings {
-  model?: string;
-  thinking?: string;
-  /** Comma-joined tool list without whitespace: pi's --tools format. */
-  tools?: string;
-  inheritProjectContext?: boolean;
-  inheritSkills?: boolean;
-  inheritExtensions?: boolean;
-  /** Shorthand for inheritExtensions: `extensions: false` adds -ne. */
-  extensions?: boolean;
-  /** Literal pi args, unresolved: path prefixes resolve when argv is built. */
-  extraArgs: string[];
-}
+export type PersonaSessionSettings = PiSettings;
 
 export interface PersonaDefinition {
   name: string;

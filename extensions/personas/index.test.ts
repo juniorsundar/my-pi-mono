@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import personasExtension from "./index.js";
 import { parsePersonaDefinition, type PersonaDefinition } from "./persona-definition-parser.js";
-import { sessionSettingsArgs } from "./persona-session-args.js";
+import { createFakeHerdr } from "../herdr/fake-herdr.js";
 
 // ── Fake extension API ───────────────────────────────────────────────
 
@@ -729,75 +729,6 @@ Current working directory: /tmp/test-project`,
         expect(message).toContain(`Unknown persona definition frontmatter key: ${key}`);
       }
     });
-
-    describe("argv mapping as in herdr agent definitions", () => {
-      const DEFINITION_DIR = "/definitions/personas";
-
-      function definition(frontmatter: string, directory = DEFINITION_DIR): PersonaDefinition {
-        return parsePersonaDefinition(`---\nname: mentor\n${frontmatter}\n---\nBody.`, directory);
-      }
-
-      it("maps every field to its pi flag", () => {
-        const persona = definition(
-          [
-            "model: claude-sonnet-4",
-            "thinking: high",
-            "tools: [read, bash]",
-            "inheritProjectContext: false",
-            "inheritSkills: false",
-            "inheritExtensions: false",
-            'extraArgs: ["--verbose", "./extra.md"]',
-          ].join("\n"),
-        );
-
-        expect(sessionSettingsArgs(persona)).toEqual([
-          "--model",
-          "claude-sonnet-4",
-          "--thinking",
-          "high",
-          "--tools",
-          "read,bash",
-          "-nc",
-          "-ns",
-          "-ne",
-          "--verbose",
-          "/definitions/personas/extra.md",
-        ]);
-      });
-
-      it("accepts tools as one whitespace-padded string", () => {
-        expect(sessionSettingsArgs(definition('tools: "read, bash"'))).toEqual([
-          "--tools",
-          "read,bash",
-        ]);
-      });
-
-      it("adds no flag for a truthy inheritance setting and none when settings are absent", () => {
-        expect(
-          sessionSettingsArgs(
-            definition(
-              "inheritProjectContext: true\ninheritSkills: true\ninheritExtensions: true",
-            ),
-          ),
-        ).toEqual([]);
-        expect(sessionSettingsArgs(definition("description: plain"))).toEqual([]);
-      });
-
-      it("takes extensions: false as the -ne shorthand", () => {
-        expect(sessionSettingsArgs(definition("extensions: false"))).toEqual(["-ne"]);
-      });
-
-      it("splits extraArgs and resolves ~/ against HOME and ./ ../ against the definition directory", () => {
-        const home = process.env.HOME ?? "";
-        expect(home).toBeTruthy();
-
-        expect(
-          sessionSettingsArgs(
-            definition('extraArgs: "--flag ~/notes.md ../shared.md plain.md"', DEFINITION_DIR),
-          ),
-        ).toEqual(["--flag", `${home}/notes.md`, "/definitions/shared.md", "plain.md"]);
-      });
-    });
   });
 
   describe("unknown persona names", () => {
@@ -1416,55 +1347,15 @@ Current working directory: /tmp/test-project`,
   });
 
   describe("persona sessions: spawn, send-to and reply delivery", () => {
-    // A fake hc: terminals are plain records the test advances by hand.
-    interface FakeTerminal { state: "live" | "finished"; turn: number; status: string; screen: string }
-    function installFakeHc(fake: FakePi) {
-      const terminals = new Map<string, FakeTerminal>();
-      const calls: string[][] = [];
-      let next = 1;
-      let unavailable = 0;
-      let failGets = 0;
-      fake.pi.exec.mockImplementation(async (cmd: string, args: string[]) => {
-        calls.push([cmd, ...args]);
-        const ok = (out: unknown = {}) => ({ code: 0, stdout: JSON.stringify(out), stderr: "", killed: false });
-        if (cmd !== "hc") return ok();
-        const [sub, ...rest] = args;
-        const target = rest[rest.length - 1];
-        if (sub === "run") {
-          const address = `t${next++}`;
-          terminals.set(address, { state: "live", turn: 0, status: "idle", screen: "" });
-          return ok({ address });
-        }
-        if (sub === "get") {
-          if (failGets > 0) {
-            failGets--;
-            return { code: 1, stdout: "", stderr: "socket hiccup", killed: false };
-          }
-          const t = terminals.get(target);
-          return t ? ok({ state: t.state, turn: t.turn, status: { state: t.status } }) : { code: 1, stdout: "", stderr: "no terminal", killed: false };
-        }
-        if (sub === "send") {
-          if (unavailable > 0) {
-            unavailable--;
-            return { code: 1, stdout: "", stderr: 'error: "unavailable"', killed: false };
-          }
-          const t = terminals.get(rest[rest.length - 2])!;
-          t.status = "working";
-          return ok({ started: true });
-        }
-        if (sub === "read") return { code: 0, stdout: terminals.get(target)?.screen ?? "", stderr: "", killed: false };
-        return ok();
-      });
-      return { terminals, calls, failSendsWhileBooting: (n: number) => { unavailable = n; }, failNextGets: (n: number) => { failGets = n; } };
-    }
-
-    function spawnArgv(calls: string[][]) {
-      return calls.filter((c) => c[0] === "hc" && c[1] === "run");
-    }
+    // Herdr Terminals the test advances by hand; hc argv is covered in extensions/herdr.
+    type FakeHerdr = ReturnType<typeof createFakeHerdr>;
+    const term = (hc: FakeHerdr, address: string) => hc.terminals.find((t) => t.address === address)!;
+    const starts = (hc: FakeHerdr) => hc.terminals.map((t) => t.start);
+    const sends = (hc: FakeHerdr) => hc.callsOf("send").map((c) => [c.address, ...c.args]);
 
     // Writes the persona's reply into the session file the spawned pi would write.
-    function writeReply(runCall: string[], text: string) {
-      const dir = runCall[runCall.indexOf("--session-dir") + 1];
+    function writeReply(start: { piArgs: string[] }, text: string) {
+      const dir = start.piArgs[start.piArgs.indexOf("--session-dir") + 1];
       const line = { type: "message", message: { role: "assistant", content: [{ type: "text", text }] } };
       writeFileSync(join(dir, "2026-01-01_x.jsonl"), `${JSON.stringify({ type: "session" })}\n${JSON.stringify(line)}\n`);
     }
@@ -1474,8 +1365,8 @@ Current working directory: /tmp/test-project`,
       writePersonaDefinition(globalDir, "contrarian", { name: "contrarian", description: "Skeptic" });
       writePersonaDefinition(globalDir, "mentor", { name: "mentor", model: "anthropic/claude-x", tools: "read,bash" });
       const cwd = makeTempDir("personas-cwd-");
-      const fake = setup({ globalDir, projectDir: missingDir(), terminalId: "t59", pollMs: 0, ...extra });
-      const hc = installFakeHc(fake);
+      const hc = createFakeHerdr();
+      const fake = setup({ globalDir, projectDir: missingDir(), terminalId: "t59", pollMs: 0, herdr: hc.herdr, ...extra });
       return { fake, hc, cwd, globalDir };
     }
 
@@ -1503,23 +1394,24 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["mentor"], { sessionManager: { getEntries: () => [], getSessionFile: () => "/tmp/main.jsonl" } });
 
-      const [call] = spawnArgv(hc.calls);
-      const sep = call.indexOf("--");
-      const id = call[call.indexOf("--name") + 1];
-      expect(id).toMatch(/^mentor-[0-9a-f]{4}$/);
-      expect(call.slice(0, sep)).toEqual(["hc", "run", "--bg", "--json", "--no-notify", "--name", id, "--cwd", cwd, "--parent", "t59"]);
-      expect(call.slice(sep + 1)).toEqual([
-        "env", `PATH=${process.env.PATH}`, "PI_PERMISSION_PROFILE=yolo", "PI_PERSONA_SESSION=mentor",
-        "pi", "--fork", "/tmp/main.jsonl", "--session-dir", join(cwd, ".pi", "persona-sessions", id), "-a",
-        "--model", "anthropic/claude-x", "--tools", "read,bash",
-      ]);
+      const [start] = starts(hc);
+      expect(start.name).toMatch(/^mentor-[0-9a-f]{4}$/);
+      expect(start).toEqual({
+        name: start.name,
+        cwd,
+        parent: "t59",
+        env: { PI_PERMISSION_PROFILE: "yolo", PI_PERSONA_SESSION: "mentor" },
+        // Session settings (model, tools) become flags after the trust flag.
+        piArgs: ["--fork", "/tmp/main.jsonl", "--session-dir", join(cwd, ".pi", "persona-sessions", start.name), "-a",
+          "--model", "anthropic/claude-x", "--tools", "read,bash"],
+      });
       expect(readFileSync(join(cwd, ".pi", "persona-sessions", ".gitignore"), "utf8")).toBe("*\n");
     });
 
     it("toggles picks: several personas spawn, a pick made twice is unselected", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian", "mentor", "mentor"]);
-      const names = spawnArgv(hc.calls).map((c) => c[c.indexOf("--name") + 1]);
+      const names = starts(hc).map((st) => st.name);
       expect(names).toHaveLength(1);
       expect(names[0]).toMatch(/^contrarian-/);
     });
@@ -1539,7 +1431,7 @@ Current working directory: /tmp/test-project`,
       pickInOrder(ui, "contrarian");
       ui.select.mockResolvedValueOnce(undefined);
       await commandHandler(fake)("spawn", ctx);
-      expect(spawnArgv(hc.calls)).toHaveLength(0);
+      expect(starts(hc)).toHaveLength(0);
     });
 
     it("leaves project-directory personas out of the spawn list in an untrusted project", async () => {
@@ -1557,14 +1449,14 @@ Current working directory: /tmp/test-project`,
     it("passes -na to the child in an untrusted project", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"], { isProjectTrusted: () => false });
-      expect(spawnArgv(hc.calls)[0]).toContain("-na");
+      expect(starts(hc)[0].piArgs).toContain("-na");
     });
 
     it("skips a persona that is already live, with a notice", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       const { notify } = await spawn(fake, cwd, ["contrarian"]);
-      expect(spawnArgv(hc.calls)).toHaveLength(1);
+      expect(starts(hc)).toHaveLength(1);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("contrarian is already live"), "info");
     });
 
@@ -1572,8 +1464,7 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian is   this plan sound?", cwd);
-      const send = hc.calls.find((c) => c[1] === "send")!;
-      expect(send).toEqual(["hc", "send", "--", "t1", "Message from the user in the main session: is   this plan sound?"]);
+      expect(sends(hc)).toEqual([["t1", "Message from the user in the main session: is   this plan sound?", { ifWorking: false }]]);
       expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(0);
     });
 
@@ -1584,21 +1475,21 @@ Current working directory: /tmp/test-project`,
       ui.input.mockResolvedValueOnce("why?");
       await commandHandler(fake)("send-to contrarian", ctx);
       expect(ui.input).toHaveBeenCalled();
-      expect(hc.calls.find((c) => c[1] === "send")).toEqual(["hc", "send", "--", "t1", "Message from the user in the main session: why?"]);
+      expect(sends(hc)).toEqual([["t1", "Message from the user in the main session: why?", { ifWorking: false }]]);
     });
 
-    it("send-to retries while the child is still booting", async () => {
+    it("send-to warns when the message could not be delivered", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
-      hc.failSendsWhileBooting(2);
-      await run(fake, "send-to contrarian hi", cwd);
-      expect(hc.calls.filter((c) => c[1] === "send")).toHaveLength(3);
+      term(hc, "t1").sendResult = { ok: false, error: "terminal gone" };
+      const { notify } = await run(fake, "send-to contrarian hi", cwd);
+      expect(notify).toHaveBeenCalledWith("Not delivered to contrarian: terminal gone", "warning");
     });
 
     it("send-to a persona that is not live is refused", async () => {
       const { fake, hc, cwd } = sessionSetup();
       const { notify } = await run(fake, "send-to contrarian hi", cwd);
-      expect(hc.calls.some((c) => c[1] === "send")).toBe(false);
+      expect(sends(hc)).toHaveLength(0);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
     });
 
@@ -1606,25 +1497,25 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian thoughts?", cwd);
-      writeReply(spawnArgv(hc.calls)[0], "It will not scale.");
-      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+      writeReply(starts(hc)[0], "It will not scale.");
+      Object.assign(term(hc, "t1"), { turn: 1, status: "done" });
 
       await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
       const i = fake.messages.findIndex((m) => m.customType === "persona-reply");
       expect(fake.messages[i]).toMatchObject({ content: "contrarian: It will not scale.", display: true });
       expect(fake.messageOptions[i]).toEqual({ triggerTurn: false });
-      expect(hc.calls.some((c) => c[1] === "kill" || c[1] === "rm")).toBe(false);
+      expect(hc.callsOf("close")).toHaveLength(0);
     });
 
     it("surfaces the terminal when the persona is blocked on a dialog", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian go", cwd);
-      hc.terminals.get("t1")!.status = "blocked";
+      term(hc, "t1").status = "blocked";
       await vi.waitFor(() =>
-        expect(hc.calls).toContainEqual(["herdr-app", "do", "terminal.peek", "--terminal", "t1"]),
+        expect(hc.callsOf("peek")).toEqual([{ address: "t1", args: [] }]),
       );
-      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+      Object.assign(term(hc, "t1"), { turn: 1, status: "done" });
       await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
     });
 
@@ -1632,7 +1523,7 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian go", cwd);
-      Object.assign(hc.terminals.get("t1")!, { state: "finished", screen: "boot\nError: unknown model" });
+      Object.assign(term(hc, "t1"), { live: false, screen: "boot\nError: unknown model" });
 
       await vi.waitFor(() => expect(fake.messages.some((m) => m.customType === "persona-reply")).toBe(true));
       const reply = fake.messages.find((m) => m.customType === "persona-reply")!;
@@ -1640,13 +1531,13 @@ Current working directory: /tmp/test-project`,
       expect(reply.content).toContain("Error: unknown model");
 
       await spawn(fake, cwd, ["contrarian"]);
-      expect(spawnArgv(hc.calls)).toHaveLength(2);
+      expect(starts(hc)).toHaveLength(2);
     });
 
     it("reports a persona that dies before anything was sent to it", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
-      Object.assign(hc.terminals.get("t1")!, { state: "finished", screen: "Error: unknown model" });
+      Object.assign(term(hc, "t1"), { live: false, screen: "Error: unknown model" });
       await vi.waitFor(() =>
         expect(fake.messages.find((m) => m.customType === "persona-reply")?.content).toContain("contrarian exited"),
       );
@@ -1655,10 +1546,10 @@ Current working directory: /tmp/test-project`,
     it("keeps a session alive through a transient hc get failure", async () => {
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
-      const t = hc.terminals.get("t1")!;
-      hc.failNextGets(2);
+      const t = term(hc, "t1");
+      t.failStates = 2;
       await run(fake, "send-to contrarian still there?", cwd);
-      writeReply(spawnArgv(hc.calls)[0], "Yes.");
+      writeReply(starts(hc)[0], "Yes.");
       Object.assign(t, { turn: 1, status: "done" });
       await vi.waitFor(() =>
         expect(fake.messages.find((m) => m.customType === "persona-reply")?.content).toBe("contrarian: Yes."),
@@ -1669,11 +1560,11 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian first", cwd);
-      writeReply(spawnArgv(hc.calls)[0], "One.");
-      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "working" });
+      writeReply(starts(hc)[0], "One.");
+      Object.assign(term(hc, "t1"), { turn: 1, status: "working" });
       await vi.waitFor(() => expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(1));
-      writeReply(spawnArgv(hc.calls)[0], "Two.");
-      Object.assign(hc.terminals.get("t1")!, { turn: 2, status: "done" });
+      writeReply(starts(hc)[0], "Two.");
+      Object.assign(term(hc, "t1"), { turn: 2, status: "done" });
       await vi.waitFor(() =>
         expect(fake.messages.filter((m) => m.customType === "persona-reply").map((m) => m.content)).toEqual([
           "contrarian: One.",
@@ -1693,8 +1584,7 @@ Current working directory: /tmp/test-project`,
       const { fake, hc, cwd } = sessionSetup();
       await spawn(fake, cwd, ["contrarian"]);
       const { notify } = await run(fake, "kill contrarian", cwd);
-      expect(hc.calls).toContainEqual(["hc", "kill", "t1"]);
-      expect(hc.calls).toContainEqual(["hc", "rm", "t1"]);
+      expect(hc.callsOf("close")).toEqual([{ address: "t1", args: [] }]);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("Killed"), "info");
       const again = await run(fake, "send-to contrarian hi", cwd);
       expect(again.notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
@@ -1705,8 +1595,8 @@ Current working directory: /tmp/test-project`,
       await spawn(fake, cwd, ["contrarian"]);
       await run(fake, "send-to contrarian think hard", cwd);
       await run(fake, "kill contrarian", cwd);
-      writeReply(spawnArgv(hc.calls)[0], "Late.");
-      Object.assign(hc.terminals.get("t1")!, { turn: 1, status: "done" });
+      writeReply(starts(hc)[0], "Late.");
+      Object.assign(term(hc, "t1"), { turn: 1, status: "done" });
       await new Promise((r) => setTimeout(r, 30));
       expect(fake.messages.filter((m) => m.customType === "persona-reply")).toHaveLength(0);
     });
@@ -1717,7 +1607,7 @@ Current working directory: /tmp/test-project`,
       const b = await run(fake, "kill", cwd);
       expect(a.notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
       expect(b.notify).toHaveBeenCalledWith(expect.stringContaining("Usage: /persona kill"), "warning");
-      expect(hc.calls.some((c) => c[1] === "kill")).toBe(false);
+      expect(hc.callsOf("close")).toHaveLength(0);
     });
 
     it("kill outside herdr is refused", async () => {
@@ -1732,8 +1622,7 @@ Current working directory: /tmp/test-project`,
       await spawn(fake, cwd, ["contrarian", "mentor"]);
       const [shutdown] = getHandlers(fake, "session_shutdown");
       await shutdown({ type: "session_shutdown", reason: "quit" }, createContext({ cwd }).ctx);
-      expect(hc.calls.filter((c) => c[1] === "kill").map((c) => c[2]).sort()).toEqual(["t1", "t2"]);
-      expect(hc.calls.filter((c) => c[1] === "rm").map((c) => c[2]).sort()).toEqual(["t1", "t2"]);
+      expect(hc.callsOf("close").map((c) => c.address).sort()).toEqual(["t1", "t2"]);
     });
 
     it("nothing is restored on the next session start", async () => {
@@ -1742,10 +1631,10 @@ Current working directory: /tmp/test-project`,
       const [shutdown] = getHandlers(fake, "session_shutdown");
       await shutdown({ type: "session_shutdown", reason: "resume" }, createContext({ cwd }).ctx);
       await sessionStart(fake, []).promise;
-      const runs = spawnArgv(hc.calls).length;
+      const runs = starts(hc).length;
       const { notify } = await run(fake, "send-to contrarian hi", cwd);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("No live Persona session"), "warning");
-      expect(spawnArgv(hc.calls)).toHaveLength(runs);
+      expect(starts(hc)).toHaveLength(runs);
     });
 
     describe("argument completions", () => {

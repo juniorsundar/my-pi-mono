@@ -59,7 +59,7 @@ Frontmatter is validated strictly: unknown fields, a missing `name`, or broken Y
 
 ## Session settings
 
-Optional fields that shape a **Persona session** only: the forked `pi` run beside the main agent. They are the agent-definition fields of the same name and map to pi's flags exactly as `extensions/subagents/src/herdr.ts` does. **A persona switch never reads them** — applying a persona to the main agent changes its system prompt and nothing else, so the agent keeps its model, thinking level, and tools.
+Optional fields that shape a **Persona session** only: the forked `pi` run beside the main agent. They are the agent-definition fields of the same name and map to pi's flags through the same `piFlags` in `extensions/herdr/` that agent definitions use. **A persona switch never reads them** — applying a persona to the main agent changes its system prompt and nothing else, so the agent keeps its model, thinking level, and tools.
 
 | Field | Meaning | pi flag |
 | ----- | ------- | ------- |
