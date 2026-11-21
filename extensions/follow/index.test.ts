@@ -292,6 +292,7 @@ describe.skipIf(!hasNvim)("follow: against a real nvim", () => {
 
   it.each([
     ["insert", "i"],
+    ["insert after CTRL-O", "i<C-o>"],
     ["replace", "R"],
     ["command-line", ":"],
   ])("does not move while the user is in %s mode", async (_mode, keys) => {

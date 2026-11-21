@@ -18,9 +18,9 @@ The nvim side of a jump respects what the user is doing in the Companion Editor:
 
 ### Acceptance criteria
 
-- [ ] Tests check that the Lua sent to nvim contains the mode check, the unsaved-buffer check (with its warning) and the reuse of a window already showing the file
+- [x] Tests check the behaviour of the Lua against a real headless nvim (skipped where nvim is absent): typing modes (insert, insert after CTRL-O, replace, command-line), the unsaved-buffer check with its warning, and reuse of a window already showing the file
 - [ ] Checked once by hand:
   - [ ] typing in insert mode isn't interrupted
   - [ ] an unsaved buffer shows the warning and keeps its contents
   - [ ] an existing split showing the file is reused
-- [ ] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
+- [x] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)

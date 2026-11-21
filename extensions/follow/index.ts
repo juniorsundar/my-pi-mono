@@ -16,7 +16,8 @@ const JUMP_TIMEOUT_MS = 1000;
 // shows the file (without making it the current window), else loads the file where the user is.
 const JUMP_LUA = [
   "(function(a)",
-  'if vim.api.nvim_get_mode().mode:match("^[iRct]") then return 0 end', // insert, replace, command-line, terminal
+  // insert, replace, command-line, terminal, and normal mode entered from insert with CTRL-O
+  'local mode = vim.api.nvim_get_mode().mode if mode:match("^[iRct]") or mode:match("^ni") then return 0 end',
   "local buf",
   'for _, b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == a.path then buf = b end end',
   "if buf and vim.bo[buf].modified then",
