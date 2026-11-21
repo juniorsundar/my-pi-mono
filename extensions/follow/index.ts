@@ -4,10 +4,12 @@
 // works the same for edit and write: pi's own `firstChangedLine` has no column and write has none.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { Text } from "@earendil-works/pi-tui";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 
 const JUMP_TIMEOUT_MS = 1000;
+const CHANGE_SUMMARY_ENTRY = "follow-changes";
 
 // Evaluated by nvim. luaeval takes an expression, not statements, so the body sits in a function.
 // `a` is {path, line, col}: col is a 0-based byte offset, as nvim_win_set_cursor wants.
@@ -41,6 +43,20 @@ interface Jump {
   col: number;
 }
 
+/** What the session knows about a file the main session changed. */
+interface Change {
+  /** The file did not exist before the run that first changed it. */
+  added: boolean;
+  /** Where the most recent change begins. */
+  line: number;
+  col: number;
+}
+
+/** The Change Summary as stored in the session: paths ready to display. */
+interface ChangeSummary {
+  files: { path: string; added: boolean }[];
+}
+
 export default function followExtension(pi: ExtensionAPI) {
   const socket = process.env.NV_SOCKET;
   // Subagents and Persona sessions can inherit NV_SOCKET from the main session; only it follows.
@@ -63,16 +79,20 @@ export default function followExtension(pi: ExtensionAPI) {
 
   // shortcut: the file is read when the call starts, so a change made in the Companion Editor
   // while an approval is pending is attributed to the call; upgrade if that ever misleads.
-  const before = new Map<string, { path: string; text: string }>();
+  const before = new Map<string, { path: string; text: string; existed: boolean }>();
+  // Every file the main session changed, newest last, and the ones the current run changed.
+  // shortcut: files changed by bash (sed -i, formatters) are invisible here and never listed.
+  const changes = new Map<string, Change>();
+  let thisRun = new Set<string>();
   // Jumps go out one at a time, in the order the changes happened.
   let queue: Promise<unknown> = Promise.resolve();
 
   pi.on("tool_call", (event, ctx) => {
-    if (!following || (event.toolName !== "edit" && event.toolName !== "write")) return;
+    if (event.toolName !== "edit" && event.toolName !== "write") return;
     const path = (event.input as { path?: unknown }).path;
     if (typeof path !== "string") return;
     const absolute = resolve(ctx.cwd, path);
-    before.set(event.toolCallId, { path: absolute, text: read(absolute) });
+    before.set(event.toolCallId, { path: absolute, text: read(absolute), existed: existsSync(absolute) });
   });
 
   // pi ends every call with tool_execution_end, but a blocked call never gets a tool_result.
@@ -82,15 +102,52 @@ export default function followExtension(pi: ExtensionAPI) {
 
   pi.on("tool_result", (event) => {
     const snapshot = before.get(event.toolCallId);
-    if (!snapshot || event.isError || !following) return; // turned off while the call ran
+    if (!snapshot || event.isError) return;
     const jump = firstChange(snapshot.path, snapshot.text, read(snapshot.path));
-    if (jump) queue = queue.then(() => send(jump)).catch(() => undefined); // an unreachable nvim is silent
+    if (!jump) return;
+    const wasAddedThisRun = thisRun.has(snapshot.path) && changes.get(snapshot.path)?.added === true;
+    changes.delete(snapshot.path); // re-inserting moves it to newest
+    changes.set(snapshot.path, { added: !snapshot.existed || wasAddedThisRun, line: jump.line, col: jump.col });
+    thisRun.add(snapshot.path);
+    // Turned off, even while the call ran: still recorded, but the editor stays put.
+    if (following) queue = queue.then(() => send(jump)).catch(() => undefined); // an unreachable nvim is silent
+  });
+
+  // Fires once, when nothing is left to retry, compact or continue: the end of the work.
+  pi.on("agent_settled", (_event, ctx) => {
+    if (thisRun.size === 0) return;
+    const files = [...thisRun].map((path) => ({ path: displayPath(ctx.cwd, path), added: changes.get(path)!.added }));
+    thisRun = new Set();
+    // An entry, not a message: entries are shown in the transcript but never reach the model.
+    pi.appendEntry<ChangeSummary>(CHANGE_SUMMARY_ENTRY, { files });
+  });
+
+  pi.on("session_start", () => {
+    changes.clear();
+    thisRun = new Set();
+  });
+
+  pi.registerEntryRenderer<ChangeSummary>(CHANGE_SUMMARY_ENTRY, (entry, _options, theme) => {
+    const files = entry.data?.files ?? [];
+    if (files.length === 0) return undefined;
+    const lines = [
+      theme.bold("Changed files"),
+      ...files.map((f) => `  ${f.added ? theme.fg("success", "added   ") : theme.fg("warning", "modified")}  ${f.path}`),
+      theme.fg("dim", "/changes opens a file in the Companion Editor"),
+    ];
+    return new Text(lines.join("\n"), 1, 0);
   });
 
   async function send(jump: Jump): Promise<void> {
     const expr = `luaeval('${vimString(JUMP_LUA)}', json_decode('${vimString(JSON.stringify(jump))}'))`;
     await pi.exec("nvim", ["--server", socket!, "--remote-expr", expr], { timeout: JUMP_TIMEOUT_MS });
   }
+}
+
+/** `path` as shown to the user: relative to where pi started, or in full when it lies outside. */
+function displayPath(cwd: string, path: string): string {
+  const shown = relative(cwd, path);
+  return shown === "" || shown.startsWith("..") || isAbsolute(shown) ? path : shown;
 }
 
 /** The file's text, or "" when it does not exist yet (or cannot be read as text). */

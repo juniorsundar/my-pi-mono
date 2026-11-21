@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -27,13 +27,18 @@ function load(env: Record<string, string> = { NV_SOCKET: SOCKET }, exec = vi.fn(
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
   const handlers = new Map<string, (event: any, ctx: any) => unknown>();
   const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+  const renderers = new Map<string, (entry: any, options: any, theme: any) => { render(width: number): string[] } | undefined>();
+  const entries: { customType: string; data: any }[] = [];
+  // No sendMessage here on purpose: a Change Summary sent as a message would reach the model.
   const pi = {
     on: (name: string, handler: any) => handlers.set(name, handler),
     registerCommand: (name: string, options: any) => commands.set(name, options),
+    registerEntryRenderer: (customType: string, renderer: any) => renderers.set(customType, renderer),
+    appendEntry: (customType: string, data: any) => entries.push({ customType, data }),
     exec,
   };
   followExtension(pi as any);
-  return { handlers, commands, exec, calls: () => exec.mock.calls as unknown as [string, string[], { timeout?: number }][] };
+  return { handlers, commands, renderers, entries, exec, calls: () => exec.mock.calls as unknown as [string, string[], { timeout?: number }][] };
 }
 
 // Plays one tool call: tool_call, the tool changing the file on disk, then tool_result.
@@ -270,6 +275,117 @@ describe("follow: the /follow toggle", () => {
     await slashFollow(loaded); // asking again changes nothing
     expect(loaded.handlers.size).toBe(0);
     expect(loaded.calls()).toHaveLength(0);
+  });
+});
+
+// The run ends: pi fires agent_settled once nothing is left to retry, compact or continue.
+const endRun = (loaded: ReturnType<typeof load>, cwd: string) => loaded.handlers.get("agent_settled")?.({ type: "agent_settled" }, { cwd });
+const summaries = (loaded: ReturnType<typeof load>) => loaded.entries.filter((e) => e.customType === "follow-changes").map((e) => e.data.files);
+
+describe("follow: the Change Summary", () => {
+  it("lists every file the run changed, in the order they were first changed, marked added or modified", async () => {
+    const cwd = tempDir();
+    writeFileSync(join(cwd, "old.txt"), "one\n");
+    const loaded = load();
+    await runTool(loaded, cwd, "edit", { path: "old.txt" }, () => writeFileSync(join(cwd, "old.txt"), "ONE\n"));
+    await runTool(loaded, cwd, "write", { path: "new.txt" }, () => writeFileSync(join(cwd, "new.txt"), "hi\n"));
+    await endRun(loaded, cwd);
+    expect(summaries(loaded)).toEqual([[
+      { path: "old.txt", added: false },
+      { path: "new.txt", added: true },
+    ]]);
+  });
+
+  it("lists a file changed several times once, and a file the run created stays added", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "twice.txt");
+    const loaded = load();
+    await runTool(loaded, cwd, "write", { path: "twice.txt" }, () => writeFileSync(file, "a\n"));
+    await runTool(loaded, cwd, "edit", { path: "twice.txt" }, () => writeFileSync(file, "b\n"));
+    await endRun(loaded, cwd);
+    expect(summaries(loaded)).toEqual([[{ path: "twice.txt", added: true }]]);
+  });
+
+  it("shows only what the latest run changed, and a file added in an earlier run is modified now", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "f.txt");
+    const loaded = load();
+    await runTool(loaded, cwd, "write", { path: "f.txt" }, () => writeFileSync(file, "a\n"));
+    await endRun(loaded, cwd);
+    await runTool(loaded, cwd, "edit", { path: "f.txt" }, () => writeFileSync(file, "b\n"));
+    await endRun(loaded, cwd);
+    expect(summaries(loaded)).toEqual([[{ path: "f.txt", added: true }], [{ path: "f.txt", added: false }]]);
+  });
+
+  it("shows nothing for a run that changed nothing: no calls, failed calls, or a write that left the file as it was", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "same.txt");
+    writeFileSync(file, "same\n");
+    const loaded = load();
+    await endRun(loaded, cwd);
+    await runTool(loaded, cwd, "edit", { path: "same.txt" }, () => writeFileSync(file, "x\n"), true);
+    await runTool(loaded, cwd, "write", { path: "same.txt" }, () => writeFileSync(file, "x\n"));
+    await endRun(loaded, cwd);
+    expect(loaded.entries).toEqual([]);
+  });
+
+  it("forgets a blocked call", async () => {
+    const cwd = tempDir();
+    writeFileSync(join(cwd, "b.txt"), "a\n");
+    const loaded = load();
+    await loaded.handlers.get("tool_call")?.({ type: "tool_call", toolName: "write", toolCallId: "c5", input: { path: "b.txt" } }, { cwd });
+    await loaded.handlers.get("tool_execution_end")?.({ type: "tool_execution_end", toolCallId: "c5", toolName: "write", isError: true }, { cwd });
+    await endRun(loaded, cwd);
+    expect(loaded.entries).toEqual([]);
+  });
+
+  it("still records with /follow off, and sends no jump", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "off.txt");
+    writeFileSync(file, "a\n");
+    const loaded = load();
+    await slashFollow(loaded); // off
+    await runTool(loaded, cwd, "write", { path: "off.txt" }, () => writeFileSync(file, "b\n"));
+    await endRun(loaded, cwd);
+    await idle();
+    expect(summaries(loaded)).toEqual([[{ path: "off.txt", added: false }]]);
+    expect(loaded.calls()).toHaveLength(0);
+  });
+
+  it("shows a path relative to where pi started, and the full path for a file outside it", async () => {
+    const cwd = tempDir();
+    const outside = join(tempDir(), "elsewhere.txt");
+    mkdirSync(join(cwd, "src"));
+    const loaded = load();
+    await runTool(loaded, cwd, "write", { path: "src/in.txt" }, () => writeFileSync(join(cwd, "src", "in.txt"), "a\n"));
+    await runTool(loaded, cwd, "write", { path: outside }, () => writeFileSync(outside, "a\n"));
+    await endRun(loaded, cwd);
+    expect(summaries(loaded)).toEqual([[
+      { path: join("src", "in.txt"), added: true },
+      { path: outside, added: true },
+    ]]);
+  });
+
+  it("starts empty when a new session starts", async () => {
+    const cwd = tempDir();
+    const loaded = load();
+    await runTool(loaded, cwd, "write", { path: "s.txt" }, () => writeFileSync(join(cwd, "s.txt"), "a\n"));
+    await loaded.handlers.get("session_start")?.({ type: "session_start", reason: "resume" }, { cwd });
+    await endRun(loaded, cwd);
+    expect(loaded.entries).toEqual([]);
+  });
+
+  it("renders as a block naming each file, how it changed, and how to open it", () => {
+    const loaded = load();
+    const render = loaded.renderers.get("follow-changes")!;
+    const theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
+    const block = render({ type: "custom", customType: "follow-changes", data: { files: [{ path: "a.ts", added: false }, { path: "dir/b.ts", added: true }] } }, { expanded: false }, theme)!;
+    const lines = block.render(80).map((line) => line.trim()).filter(Boolean);
+    expect(lines[0]).toBe("Changed files");
+    expect(lines[1]).toMatch(/^modified\s+a\.ts$/);
+    expect(lines[2]).toMatch(/^added\s+dir\/b\.ts$/);
+    expect(lines[3]).toContain("/changes");
+    expect(render({ type: "custom", customType: "follow-changes", data: { files: [] } }, { expanded: false }, theme)).toBeUndefined();
   });
 });
 
