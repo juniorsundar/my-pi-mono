@@ -13,18 +13,19 @@ const CHANGE_SUMMARY_ENTRY = "follow-changes";
 
 // Evaluated by nvim. luaeval takes an expression, not statements, so the body sits in a function.
 // `a` is {path, line, col}: col is a 0-based byte offset, as nvim_win_set_cursor wants.
+// It answers "moved", "typing" or "unsaved": Follow Mode ignores the answer, /changes explains it.
 // The jump must never disturb the user: it does nothing while they are typing, and it never
 // touches a buffer holding unsaved changes. It prefers a window of the current tab that already
 // shows the file (without making it the current window), else loads the file where the user is.
 const JUMP_LUA = [
   "(function(a)",
   // insert, replace, command-line, terminal, and normal mode entered from insert with CTRL-O
-  'local mode = vim.api.nvim_get_mode().mode if mode:match("^[iRct]") or mode:match("^ni") then return 0 end',
+  'local mode = vim.api.nvim_get_mode().mode if mode:match("^[iRct]") or mode:match("^ni") then return "typing" end',
   "local buf",
   'for _, b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == a.path then buf = b end end',
   "if buf and vim.bo[buf].modified then",
   'vim.notify("pi changed " .. a.path .. ", but this buffer has unsaved changes: not reloaded", vim.log.levels.WARN)',
-  "return 0 end",
+  'return "unsaved" end',
   "local win",
   "if buf then for _, w in ipairs(vim.fn.win_findbuf(buf)) do if vim.api.nvim_win_get_tabpage(w) == vim.api.nvim_get_current_tabpage() then win = w; break end end end",
   "if not win then vim.cmd.edit(vim.fn.fnameescape(a.path)); win = vim.api.nvim_get_current_win() end",
@@ -33,7 +34,7 @@ const JUMP_LUA = [
   "vim.api.nvim_win_set_cursor(0, { math.min(a.line, vim.api.nvim_buf_line_count(0)), a.col })",
   'vim.cmd("normal! zz")',
   "end)",
-  "return 1",
+  'return "moved"',
   "end)(_A)",
 ].join(" ");
 
@@ -42,6 +43,8 @@ interface Jump {
   line: number;
   col: number;
 }
+
+type Outcome = "moved" | "typing" | "unsaved" | "unreachable";
 
 /** What the session knows about a file the main session changed. */
 interface Change {
@@ -75,6 +78,29 @@ export default function followExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`Follow Mode ${following ? "on" : "off"}`, "info");
     },
   });
+  pi.registerCommand("changes", {
+    description: "Open a file this session changed in the Companion Editor",
+    handler: async (_args, ctx) => {
+      if (!socket) {
+        ctx.ui.notify("No Companion Editor to open files in: start pi with nv inside herdr (NV_SOCKET is not set).", "info");
+        return;
+      }
+      const newestFirst = [...changes].reverse();
+      if (newestFirst.length === 0) {
+        ctx.ui.notify("No files changed yet in this session.", "info");
+        return;
+      }
+      const options = newestFirst.map(([path, change]) => `${mark(change.added)}  ${displayPath(ctx.cwd, path)}`);
+      const choice = await ctx.ui.select("Open in the Companion Editor", options);
+      if (choice === undefined) return;
+      const [path, change] = newestFirst[options.indexOf(choice)];
+      const outcome = await send({ path, line: change.line, col: change.col });
+      const shown = displayPath(ctx.cwd, path);
+      if (outcome === "typing") ctx.ui.notify("Not opened: the Companion Editor is in a typing mode (insert, replace, command-line or terminal).", "warning");
+      else if (outcome === "unsaved") ctx.ui.notify(`Not opened: ${shown} has unsaved changes in the Companion Editor.`, "warning");
+      else if (outcome === "unreachable") ctx.ui.notify(`Could not reach the Companion Editor (NV_SOCKET ${socket}).`, "warning");
+    },
+  });
   if (!socket) return;
 
   // shortcut: the file is read when the call starts, so a change made in the Companion Editor
@@ -84,7 +110,7 @@ export default function followExtension(pi: ExtensionAPI) {
   // shortcut: files changed by bash (sed -i, formatters) are invisible here and never listed.
   const changes = new Map<string, Change>();
   let thisRun = new Set<string>();
-  // Jumps go out one at a time, in the order the changes happened.
+  // Jumps go out one at a time, in the order they were asked for.
   let queue: Promise<unknown> = Promise.resolve();
 
   pi.on("tool_call", (event, ctx) => {
@@ -111,7 +137,7 @@ export default function followExtension(pi: ExtensionAPI) {
     changes.set(snapshot.path, { added: !snapshot.existed || wasAddedThisRun, line: jump.line, col: jump.col });
     thisRun.add(snapshot.path);
     // Turned off, even while the call ran: still recorded, but the editor stays put.
-    if (following) queue = queue.then(() => send(jump)).catch(() => undefined); // an unreachable nvim is silent
+    if (following) void send(jump); // Follow Mode never reports a jump that did not happen
   });
 
   // Fires once, when nothing is left to retry, compact or continue: the end of the work.
@@ -133,17 +159,33 @@ export default function followExtension(pi: ExtensionAPI) {
     if (files.length === 0) return undefined;
     const lines = [
       theme.bold("Changed files"),
-      ...files.map((f) => `  ${f.added ? theme.fg("success", "added".padEnd(8)) : theme.fg("warning", "modified")}  ${f.path}`),
+      ...files.map((f) => `  ${theme.fg(f.added ? "success" : "warning", mark(f.added))}  ${f.path}`),
       theme.fg("dim", "/changes opens a file in the Companion Editor"),
     ];
     return new Text(lines.join("\n"), 1, 0);
   });
 
-  async function send(jump: Jump): Promise<void> {
+  function send(jump: Jump): Promise<Outcome> {
+    const outcome = queue.then(() => open(jump));
+    queue = outcome;
+    return outcome;
+  }
+
+  async function open(jump: Jump): Promise<Outcome> {
     const expr = `luaeval('${vimString(JUMP_LUA)}', json_decode('${vimString(JSON.stringify(jump))}'))`;
-    await pi.exec("nvim", ["--server", socket!, "--remote-expr", expr], { timeout: JUMP_TIMEOUT_MS });
+    try {
+      const result = await pi.exec("nvim", ["--server", socket!, "--remote-expr", expr], { timeout: JUMP_TIMEOUT_MS });
+      if (result.code !== 0) return "unreachable";
+      const said = result.stdout.trim();
+      return said === "typing" || said === "unsaved" ? said : "moved";
+    } catch {
+      return "unreachable";
+    }
   }
 }
+
+/** How a file's change is labelled, padded so paths line up. */
+const mark = (added: boolean) => (added ? "added" : "modified").padEnd(8);
 
 /** `path` as shown to the user: relative to where pi started, or in full when it lies outside. */
 function displayPath(cwd: string, path: string): string {

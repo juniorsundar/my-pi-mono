@@ -389,6 +389,105 @@ describe("follow: the Change Summary", () => {
   });
 });
 
+/** Runs /changes in `cwd`, picking by `choose` (an index into the options, or undefined to cancel). */
+async function slashChanges(loaded: ReturnType<typeof load>, cwd: string, choose: number | undefined = undefined) {
+  const notify = vi.fn();
+  const select = vi.fn(async (_title: string, options: string[]) => (choose === undefined ? undefined : options[choose]));
+  await loaded.commands.get("changes")!.handler("", { cwd, ui: { select, notify } });
+  return { select, notify, options: select.mock.calls[0]?.[1] as string[] | undefined, said: notify.mock.calls.map(([message]) => message as string) };
+}
+
+describe("follow: /changes", () => {
+  async function twoChanges(loaded: ReturnType<typeof load>, cwd: string) {
+    writeFileSync(join(cwd, "old.txt"), "one\ntwo\nthree\n");
+    await runTool(loaded, cwd, "edit", { path: "old.txt" }, () => writeFileSync(join(cwd, "old.txt"), "one\nTWO\nthree\n"));
+    await runTool(loaded, cwd, "write", { path: "new.txt" }, () => writeFileSync(join(cwd, "new.txt"), "hi\n"));
+  }
+
+  it("lists the session's changed files newest first, marked added or modified", async () => {
+    const cwd = tempDir();
+    const loaded = load();
+    await twoChanges(loaded, cwd);
+    const { options } = await slashChanges(loaded, cwd);
+    expect(options).toEqual(["added     new.txt", "modified  old.txt"]);
+  });
+
+  it("opens the chosen file at the most recent change to it", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "old.txt");
+    const loaded = load();
+    await twoChanges(loaded, cwd);
+    await runTool(loaded, cwd, "edit", { path: "old.txt" }, () => writeFileSync(file, "one\nTWO\nTHREE\n")); // later, further down
+    await vi.waitFor(() => expect(loaded.calls().length).toBeGreaterThanOrEqual(3)); // Follow Mode's own jumps
+    loaded.exec.mockClear();
+    const { said } = await slashChanges(loaded, cwd, 0); // newest first: old.txt
+    expect(jumps(loaded)).toEqual([{ path: file, line: 3, col: 0 }]);
+    expect(said).toEqual([]);
+  });
+
+  it("does nothing when the picker is cancelled", async () => {
+    const cwd = tempDir();
+    const loaded = load();
+    await twoChanges(loaded, cwd);
+    await vi.waitFor(() => expect(loaded.calls().length).toBeGreaterThanOrEqual(2));
+    loaded.exec.mockClear();
+    const { said } = await slashChanges(loaded, cwd);
+    expect(loaded.calls()).toHaveLength(0);
+    expect(said).toEqual([]);
+  });
+
+  it("works with /follow off", async () => {
+    const cwd = tempDir();
+    const loaded = load();
+    await slashFollow(loaded); // off
+    await twoChanges(loaded, cwd);
+    expect(loaded.calls()).toHaveLength(0);
+    await slashChanges(loaded, cwd, 1);
+    expect(jumps(loaded)).toEqual([{ path: join(cwd, "old.txt"), line: 2, col: 0 }]);
+  });
+
+  it("says so when nothing has changed yet", async () => {
+    const loaded = load();
+    const { select, said } = await slashChanges(loaded, tempDir());
+    expect(select).not.toHaveBeenCalled();
+    expect(said).toEqual([expect.stringMatching(/no files changed/i)]);
+  });
+
+  it("explains there is no Companion Editor, and does nothing else, without NV_SOCKET", async () => {
+    const loaded = load({ NV_SOCKET: "" });
+    const { select, said } = await slashChanges(loaded, tempDir());
+    expect(select).not.toHaveBeenCalled();
+    expect(said).toEqual([expect.stringContaining("NV_SOCKET")]);
+    expect(loaded.calls()).toHaveLength(0);
+  });
+
+  it.each([
+    ["typing", /typing mode/i],
+    ["unsaved", /unsaved changes/i],
+  ])("says why when the Companion Editor held back (%s)", async (reason, message) => {
+    const cwd = tempDir();
+    const loaded = load();
+    await twoChanges(loaded, cwd);
+    await vi.waitFor(() => expect(loaded.calls().length).toBeGreaterThanOrEqual(2));
+    loaded.exec.mockResolvedValue({ code: 0, stdout: `${reason}\n`, stderr: "", killed: false });
+    const { said } = await slashChanges(loaded, cwd, 0);
+    expect(said).toEqual([expect.stringMatching(message)]);
+  });
+
+  it.each([
+    ["rejects", () => Promise.reject(new Error("E247: no registered server"))],
+    ["exits non-zero", () => Promise.resolve({ code: 1, stdout: "", stderr: "E247", killed: false })],
+  ])("says the Companion Editor could not be reached when nvim %s", async (_how, outcome) => {
+    const cwd = tempDir();
+    const loaded = load();
+    await twoChanges(loaded, cwd);
+    await vi.waitFor(() => expect(loaded.calls().length).toBeGreaterThanOrEqual(2));
+    loaded.exec.mockImplementation(outcome as any);
+    const { said } = await slashChanges(loaded, cwd, 0);
+    expect(said).toEqual([expect.stringMatching(/could not reach the Companion Editor/i)]);
+  });
+});
+
 describe("follow: when it stays out of the way", () => {
 
   it.each([
@@ -432,11 +531,14 @@ async function withNvim(files: Record<string, string>, body: (t: RealNvim) => Pr
       expr: (e) => server(["--remote-expr", e]).stdout.trim(),
       send: (keys) => void server(["--remote-send", keys]),
       // Changes `name` on disk as an edit would, and waits until the jump has been sent.
-      edit: async (name, text) => {
+      edit: async (name, text, { followed = true } = {}) => {
         const before = finished;
         await runTool(loaded, cwd, "edit", { path: name }, () => writeFileSync(join(cwd, name), text));
-        await vi.waitFor(() => expect(finished).toBe(before + 1));
+        if (followed) await vi.waitFor(() => expect(finished).toBe(before + 1));
       },
+      followOff: () => slashFollow(loaded),
+      // Opens the newest changed file through /changes; returns what pi told the user.
+      openNewest: async () => (await slashChanges(loaded, cwd, 0)).said,
     });
   } finally {
     nvim.kill();
@@ -448,7 +550,9 @@ interface RealNvim {
   paths: string[];
   expr(e: string): string;
   send(keys: string): void;
-  edit(name: string, text: string): Promise<void>;
+  edit(name: string, text: string, options?: { followed?: boolean }): Promise<void>;
+  followOff(): Promise<unknown>;
+  openNewest(): Promise<string[]>;
 }
 
 describe.skipIf(!hasNvim)("follow: against a real nvim", () => {
@@ -495,6 +599,40 @@ describe.skipIf(!hasNvim)("follow: against a real nvim", () => {
       expect(nvim.expr("expand('%:t') . ':' . winnr('$')")).toBe("b.txt:2"); // same window, no new one
       const aWindow = nvim.expr("win_findbuf(bufnr('a.txt'))[0]");
       expect(nvim.expr(`getcurpos(${aWindow})[1] . ':' . getbufline('a.txt', 3)[0]`)).toBe("3:A3"); // moved, and reloaded
+    });
+  });
+
+  describe("/changes", () => {
+    it("opens the newest changed file at the change, even with /follow off", async () => {
+      await withNvim({ "c.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+        await nvim.followOff();
+        await nvim.edit("c.txt", "one\ntwo\nTHREE\n", { followed: false });
+        expect(nvim.expr("line('.')")).toBe("1"); // nothing followed
+        expect(await nvim.openNewest()).toEqual([]);
+        expect(nvim.expr("getline(3) . '@' . line('.') . ':' . col('.')")).toBe("THREE@3:1");
+      });
+    });
+
+    it("says it held back while the user is typing, and does not move", async () => {
+      await withNvim({ "c.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+        await nvim.followOff();
+        await nvim.edit("c.txt", "one\ntwo\nTHREE\n", { followed: false });
+        nvim.send("i");
+        expect(await nvim.openNewest()).toEqual([expect.stringMatching(/typing mode/i)]);
+        expect(nvim.expr("line('.')")).toBe("1");
+        expect(nvim.expr("getline(3)")).toBe("three");
+      });
+    });
+
+    it("says it held back for unsaved changes, and leaves the buffer as it was", async () => {
+      await withNvim({ "c.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+        await nvim.followOff();
+        nvim.send("ggOunsaved line<Esc>");
+        await nvim.edit("c.txt", "one\ntwo\nTHREE\n", { followed: false });
+        expect(await nvim.openNewest()).toEqual([expect.stringMatching(/unsaved changes/i)]);
+        expect(nvim.expr("getline(1)")).toBe("unsaved line");
+        expect(nvim.expr("&modified")).toBe("1");
+      });
     });
   });
 
