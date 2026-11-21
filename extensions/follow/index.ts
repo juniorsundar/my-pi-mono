@@ -45,7 +45,21 @@ export default function followExtension(pi: ExtensionAPI) {
   const socket = process.env.NV_SOCKET;
   // Subagents and Persona sessions can inherit NV_SOCKET from the main session; only it follows.
   const isMainSession = process.env.PI_SUBAGENT_CHILD !== "1" && process.env.PI_HERDR_SUBAGENT !== "1" && !process.env.PI_PERSONA_SESSION;
-  if (!socket || !isMainSession) return;
+  if (!isMainSession) return;
+
+  let following = true;
+  pi.registerCommand("follow", {
+    description: "Turn Follow Mode on or off: the Companion Editor jumps to each edit/write",
+    handler: async (_args, ctx) => {
+      if (!socket) {
+        ctx.ui.notify("Follow Mode needs a Companion Editor: start pi with nv inside herdr (NV_SOCKET is not set).", "info");
+        return;
+      }
+      following = !following;
+      ctx.ui.notify(`Follow Mode ${following ? "on" : "off"}`, "info");
+    },
+  });
+  if (!socket) return;
 
   // shortcut: the file is read when the call starts, so a change made in the Companion Editor
   // while an approval is pending is attributed to the call; upgrade if that ever misleads.
@@ -54,7 +68,7 @@ export default function followExtension(pi: ExtensionAPI) {
   let queue: Promise<unknown> = Promise.resolve();
 
   pi.on("tool_call", (event, ctx) => {
-    if (event.toolName !== "edit" && event.toolName !== "write") return;
+    if (!following || (event.toolName !== "edit" && event.toolName !== "write")) return;
     const path = (event.input as { path?: unknown }).path;
     if (typeof path !== "string") return;
     const absolute = resolve(ctx.cwd, path);
@@ -68,7 +82,7 @@ export default function followExtension(pi: ExtensionAPI) {
 
   pi.on("tool_result", (event) => {
     const snapshot = before.get(event.toolCallId);
-    if (!snapshot || event.isError) return;
+    if (!snapshot || event.isError || !following) return; // turned off while the call ran
     const jump = firstChange(snapshot.path, snapshot.text, read(snapshot.path));
     if (jump) queue = queue.then(() => send(jump)).catch(() => undefined); // an unreachable nvim is silent
   });

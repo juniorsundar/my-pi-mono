@@ -26,9 +26,14 @@ function load(env: Record<string, string> = { NV_SOCKET: SOCKET }, exec = vi.fn(
   for (const key of ["PI_SUBAGENT_CHILD", "PI_HERDR_SUBAGENT", "PI_PERSONA_SESSION"]) vi.stubEnv(key, "");
   for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
   const handlers = new Map<string, (event: any, ctx: any) => unknown>();
-  const pi = { on: (name: string, handler: any) => handlers.set(name, handler), exec };
+  const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
+  const pi = {
+    on: (name: string, handler: any) => handlers.set(name, handler),
+    registerCommand: (name: string, options: any) => commands.set(name, options),
+    exec,
+  };
   followExtension(pi as any);
-  return { handlers, exec, calls: () => exec.mock.calls as unknown as [string, string[], { timeout?: number }][] };
+  return { handlers, commands, exec, calls: () => exec.mock.calls as unknown as [string, string[], { timeout?: number }][] };
 }
 
 // Plays one tool call: tool_call, the tool changing the file on disk, then tool_result.
@@ -216,12 +221,59 @@ describe("follow: talking to the Companion Editor", () => {
   });
 });
 
-describe("follow: when it stays out of the way", () => {
-  it("registers nothing without NV_SOCKET", () => {
-    vi.stubEnv("NV_SOCKET", "");
-    const loaded = load({});
-    expect(loaded.handlers.size).toBe(0);
+/** Runs /follow and returns what it told the user. */
+async function slashFollow(loaded: ReturnType<typeof load>): Promise<string[]> {
+  const notify = vi.fn();
+  await loaded.commands.get("follow")!.handler("", { ui: { notify } });
+  return notify.mock.calls.map(([message]) => message as string);
+}
+
+describe("follow: the /follow toggle", () => {
+  it("turns Follow Mode off and back on, saying which state it is in", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "t.txt");
+    writeFileSync(file, "a\n");
+    const loaded = load();
+
+    expect(await slashFollow(loaded)).toEqual([expect.stringMatching(/\boff\b/i)]);
+    await runTool(loaded, cwd, "write", { path: "t.txt" }, () => writeFileSync(file, "b\n"));
+    await idle();
+    expect(loaded.calls()).toHaveLength(0); // off: no jump
+
+    expect(await slashFollow(loaded)).toEqual([expect.stringMatching(/\bon\b/i)]);
+    await runTool(loaded, cwd, "write", { path: "t.txt" }, () => writeFileSync(file, "c\n"));
+    await settled(loaded, 1);
+    expect(jumps(loaded)).toEqual([{ path: file, line: 1, col: 0 }]); // on again
   });
+
+  it("does not jump for a call that was already running when it was turned off", async () => {
+    const cwd = tempDir();
+    const file = join(cwd, "t.txt");
+    writeFileSync(file, "a\n");
+    const loaded = load();
+    const ctx = { cwd };
+    await loaded.handlers.get("tool_call")?.({ type: "tool_call", toolName: "write", toolCallId: "c1", input: { path: "t.txt" } }, ctx);
+    await slashFollow(loaded); // off
+    writeFileSync(file, "b\n");
+    await loaded.handlers.get("tool_result")?.({ type: "tool_result", toolName: "write", toolCallId: "c1", input: {}, isError: false, content: [] }, ctx);
+    await idle();
+    expect(loaded.calls()).toHaveLength(0);
+  });
+
+  it("explains that there is no Companion Editor, and enables nothing, without NV_SOCKET", async () => {
+    const loaded = load({ NV_SOCKET: "" });
+    const [message, ...rest] = await slashFollow(loaded);
+    expect(message).toContain("Companion Editor");
+    expect(message).toContain("NV_SOCKET");
+    expect(rest).toEqual([]);
+    expect(loaded.handlers.size).toBe(0); // still no event handlers, so nothing can follow
+    await slashFollow(loaded); // asking again changes nothing
+    expect(loaded.handlers.size).toBe(0);
+    expect(loaded.calls()).toHaveLength(0);
+  });
+});
+
+describe("follow: when it stays out of the way", () => {
 
   it.each([
     ["a headless subagent", { PI_SUBAGENT_CHILD: "1" }],
@@ -230,6 +282,7 @@ describe("follow: when it stays out of the way", () => {
   ])("registers nothing in %s, which inherits NV_SOCKET but is not the main session", (_name, env) => {
     const loaded = load({ NV_SOCKET: SOCKET, ...env });
     expect(loaded.handlers.size).toBe(0);
+    expect(loaded.commands.size).toBe(0);
   });
 });
 

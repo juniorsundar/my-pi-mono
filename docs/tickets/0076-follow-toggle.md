@@ -14,7 +14,7 @@ None. Designed in a grilling session; vocabulary in CONTEXT.md (Follow: **Compan
 
 ### Acceptance criteria
 
-- [ ] With `/follow` off, a successful `edit` sends no jump; turning it back on resumes jumps
-- [ ] `/follow` without `NV_SOCKET` notifies and doesn't enable anything
-- [ ] Extension tests cover both
-- [ ] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
+- [x] With `/follow` off, a successful `edit` sends no jump; turning it back on resumes jumps
+- [x] `/follow` without `NV_SOCKET` notifies and doesn't enable anything
+- [x] Extension tests cover both
+- [x] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
