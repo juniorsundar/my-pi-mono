@@ -160,7 +160,6 @@ export default function followExtension(pi: ExtensionAPI) {
     const lines = [
       theme.bold("Changed files"),
       ...files.map((f) => `  ${theme.fg(f.added ? "success" : "warning", mark(f.added))}  ${f.path}`),
-      theme.fg("dim", "/changes opens a file in the Companion Editor"),
     ];
     return new Text(lines.join("\n"), 1, 0);
   });

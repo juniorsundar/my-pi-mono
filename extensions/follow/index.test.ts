@@ -375,7 +375,7 @@ describe("follow: the Change Summary", () => {
     expect(loaded.entries).toEqual([]);
   });
 
-  it("renders as a block naming each file, how it changed, and how to open it", () => {
+  it("renders as a block naming each file and how it changed", () => {
     const loaded = load();
     const render = loaded.renderers.get("follow-changes")!;
     const theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
@@ -384,7 +384,7 @@ describe("follow: the Change Summary", () => {
     expect(lines[0]).toBe("Changed files");
     expect(lines[1]).toMatch(/^modified\s+a\.ts$/);
     expect(lines[2]).toMatch(/^added\s+dir\/b\.ts$/);
-    expect(lines[3]).toContain("/changes");
+    expect(lines).toHaveLength(3); // no hint line after the files
     expect(render({ type: "custom", customType: "follow-changes", data: { files: [] } }, { expanded: false }, theme)).toBeUndefined();
   });
 });

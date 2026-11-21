@@ -24,5 +24,5 @@ Opening works whether or not Follow Mode is on.
   - [x] held back for a buffer with unsaved changes, with the reason reported, and the buffer left as it was
 - [x] Tests with a fake `pi`: the picker lists newest first with the marks; choosing sends the file; cancelling sends nothing; empty and no-`NV_SOCKET` cases say so; an unreachable nvim is reported; works with `/follow` off
 - [x] Follow Mode's own jumps behave exactly as before (the 0074 and 0075 tests still pass)
-- [ ] Checked once by hand in herdr: `/changes` opens a file in the Companion Editor, and holding back is explained while nvim is in insert mode
+- [x] Checked once by hand in herdr: `/changes` opens a file in the Companion Editor, and holding back is explained while nvim is in insert mode
 - [x] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
