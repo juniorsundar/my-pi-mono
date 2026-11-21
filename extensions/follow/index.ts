@@ -105,6 +105,7 @@ export default function followExtension(pi: ExtensionAPI) {
     if (!snapshot || event.isError) return;
     const jump = firstChange(snapshot.path, snapshot.text, read(snapshot.path));
     if (!jump) return;
+    // Only this run's own additions carry over: a file an earlier run added is modified now.
     const wasAddedThisRun = thisRun.has(snapshot.path) && changes.get(snapshot.path)?.added === true;
     changes.delete(snapshot.path); // re-inserting moves it to newest
     changes.set(snapshot.path, { added: !snapshot.existed || wasAddedThisRun, line: jump.line, col: jump.col });
@@ -132,7 +133,7 @@ export default function followExtension(pi: ExtensionAPI) {
     if (files.length === 0) return undefined;
     const lines = [
       theme.bold("Changed files"),
-      ...files.map((f) => `  ${f.added ? theme.fg("success", "added   ") : theme.fg("warning", "modified")}  ${f.path}`),
+      ...files.map((f) => `  ${f.added ? theme.fg("success", "added".padEnd(8)) : theme.fg("warning", "modified")}  ${f.path}`),
       theme.fg("dim", "/changes opens a file in the Companion Editor"),
     ];
     return new Text(lines.join("\n"), 1, 0);
