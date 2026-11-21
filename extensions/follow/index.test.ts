@@ -233,30 +233,107 @@ describe("follow: when it stays out of the way", () => {
   });
 });
 
-// The one test that needs a real Companion Editor: it checks the Lua nvim evaluates, which the
-// tests above cannot see. Skipped where nvim is not installed.
+// These need a real Companion Editor: they check the Lua nvim evaluates, which the tests above
+// cannot see. Skipped where nvim is not installed.
 const hasNvim = spawnSync("nvim", ["--version"]).status === 0;
+
+/** A headless nvim on a socket, plus the extension wired to it through the real nvim client. */
+async function withNvim(files: Record<string, string>, body: (t: RealNvim) => Promise<void>) {
+  const cwd = tempDir();
+  const socket = join(cwd, "nv.sock");
+  const paths = Object.entries(files).map(([name, text]) => {
+    const path = join(cwd, name);
+    writeFileSync(path, text);
+    return path;
+  });
+  const nvim = spawn("nvim", ["--headless", "--clean", "--listen", socket, ...paths.slice(0, 1)], { stdio: "ignore" });
+  const server = (args: string[]) => spawnSync("nvim", ["--server", socket, ...args], { encoding: "utf8" });
+  try {
+    await vi.waitFor(() => expect(server(["--remote-expr", "1"]).status).toBe(0), { timeout: 5000 });
+    let finished = 0;
+    const exec = async (cmd: string, args: string[]) => {
+      const r = spawnSync(cmd, args, { encoding: "utf8" });
+      finished++;
+      return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr, killed: false };
+    };
+    const loaded = load({ NV_SOCKET: socket }, exec as any);
+    await body({
+      cwd,
+      paths,
+      expr: (e) => server(["--remote-expr", e]).stdout.trim(),
+      send: (keys) => void server(["--remote-send", keys]),
+      // Changes `name` on disk as an edit would, and waits until the jump has been sent.
+      edit: async (name, text) => {
+        const before = finished;
+        await runTool(loaded, cwd, "edit", { path: name }, () => writeFileSync(join(cwd, name), text));
+        await vi.waitFor(() => expect(finished).toBe(before + 1));
+      },
+    });
+  } finally {
+    nvim.kill();
+  }
+}
+
+interface RealNvim {
+  cwd: string;
+  paths: string[];
+  expr(e: string): string;
+  send(keys: string): void;
+  edit(name: string, text: string): Promise<void>;
+}
+
 describe.skipIf(!hasNvim)("follow: against a real nvim", () => {
   it("reloads the file and puts the cursor on the changed spot", async () => {
-    const cwd = tempDir();
-    const socket = join(cwd, "nv.sock");
-    const file = join(cwd, "real.txt");
-    writeFileSync(file, "one\ntwo\nthree\n");
-    const nvim = spawn("nvim", ["--headless", "--clean", "--listen", socket, file], { stdio: "ignore" });
-    try {
-      const run = (args: string[]) => spawnSync("nvim", ["--server", socket, ...args], { encoding: "utf8" });
-      await vi.waitFor(() => expect(run(["--remote-expr", "1"]).status).toBe(0), { timeout: 5000 });
+    await withNvim({ "real.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+      await nvim.edit("real.txt", "one\ntwo CHANGED\nthree\n");
+      expect(nvim.expr("getline(2) . '@' . line('.') . ':' . col('.')")).toBe("two CHANGED@2:4");
+    });
+  });
 
-      const exec = async (cmd: string, args: string[]) => {
-        const r = spawnSync(cmd, args, { encoding: "utf8" });
-        return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr, killed: false };
-      };
-      const loaded = load({ NV_SOCKET: socket }, exec as any);
-      await runTool(loaded, cwd, "edit", { path: "real.txt" }, () => writeFileSync(file, "one\ntwo CHANGED\nthree\n"));
+  it.each([
+    ["insert", "i"],
+    ["replace", "R"],
+    ["command-line", ":"],
+  ])("does not move while the user is in %s mode", async (_mode, keys) => {
+    await withNvim({ "typing.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+      nvim.send(keys);
+      const mode = nvim.expr("mode()");
+      await nvim.edit("typing.txt", "one\ntwo\nTHREE\n");
+      expect(nvim.expr("mode()")).toBe(mode); // still typing
+      expect(nvim.expr("line('.')")).toBe("1"); // cursor not pulled away
+      expect(nvim.expr("getline(3)")).toBe("three"); // file not reloaded under them
+    });
+  });
 
-      await vi.waitFor(() => expect(run(["--remote-expr", "getline(2) . '@' . line('.') . ':' . col('.')"]).stdout.trim()).toBe("two CHANGED@2:4"));
-    } finally {
-      nvim.kill();
-    }
+  it("neither reloads nor moves a buffer with unsaved changes, and warns", async () => {
+    await withNvim({ "dirty.txt": "one\ntwo\nthree\n" }, async (nvim) => {
+      nvim.send("ggOunsaved line<Esc>");
+      expect(nvim.expr("&modified")).toBe("1");
+      await nvim.edit("dirty.txt", "one\ntwo\nTHREE\n");
+      expect(nvim.expr("getline(1)")).toBe("unsaved line");
+      expect(nvim.expr("&modified")).toBe("1");
+      expect(nvim.expr("line('.')")).toBe("1");
+      expect(nvim.expr("execute('messages')")).toContain("unsaved changes");
+    });
+  });
+
+  it("uses the window that already shows the file, leaving the user's current window alone", async () => {
+    await withNvim({ "a.txt": "a1\na2\na3\n", "b.txt": "b1\n" }, async (nvim) => {
+      nvim.send(":vsplit b.txt<CR>"); // current window shows b.txt, the other shows a.txt
+      expect(nvim.expr("expand('%:t') . ':' . winnr('$')")).toBe("b.txt:2");
+      await nvim.edit("a.txt", "a1\na2\nA3\n");
+      expect(nvim.expr("expand('%:t') . ':' . winnr('$')")).toBe("b.txt:2"); // same window, no new one
+      const aWindow = nvim.expr("win_findbuf(bufnr('a.txt'))[0]");
+      expect(nvim.expr(`getcurpos(${aWindow})[1] . ':' . getbufline('a.txt', 3)[0]`)).toBe("3:A3"); // moved, and reloaded
+    });
+  });
+
+  it("loads the file into the current window when only another tab shows it", async () => {
+    await withNvim({ "a.txt": "a1\na2\n", "b.txt": "b1\n" }, async (nvim) => {
+      nvim.send(":tabnew b.txt<CR>");
+      expect(nvim.expr("tabpagenr()")).toBe("2");
+      await nvim.edit("a.txt", "a1\nA2\n");
+      expect(nvim.expr("tabpagenr() . ':' . expand('%:t') . ':' . line('.')")).toBe("2:a.txt:2");
+    });
   });
 });

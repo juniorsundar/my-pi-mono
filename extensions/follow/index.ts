@@ -11,12 +11,25 @@ const JUMP_TIMEOUT_MS = 1000;
 
 // Evaluated by nvim. luaeval takes an expression, not statements, so the body sits in a function.
 // `a` is {path, line, col}: col is a 0-based byte offset, as nvim_win_set_cursor wants.
+// The jump must never disturb the user: it does nothing while they are typing, and it never
+// touches a buffer holding unsaved changes. It prefers a window of the current tab that already
+// shows the file (without making it the current window), else loads the file where the user is.
 const JUMP_LUA = [
   "(function(a)",
-  "vim.cmd.edit(vim.fn.fnameescape(a.path))",
+  'if vim.api.nvim_get_mode().mode:match("^[iRct]") then return 0 end', // insert, replace, command-line, terminal
+  "local buf",
+  'for _, b in ipairs(vim.api.nvim_list_bufs()) do if vim.api.nvim_buf_is_loaded(b) and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":p") == a.path then buf = b end end',
+  "if buf and vim.bo[buf].modified then",
+  'vim.notify("pi changed " .. a.path .. ", but this buffer has unsaved changes: not reloaded", vim.log.levels.WARN)',
+  "return 0 end",
+  "local win",
+  "if buf then for _, w in ipairs(vim.fn.win_findbuf(buf)) do if vim.api.nvim_win_get_tabpage(w) == vim.api.nvim_get_current_tabpage() then win = w; break end end end",
+  "if not win then vim.cmd.edit(vim.fn.fnameescape(a.path)); win = vim.api.nvim_get_current_win() end",
+  "vim.api.nvim_win_call(win, function()",
   "vim.cmd.checktime()",
   "vim.api.nvim_win_set_cursor(0, { math.min(a.line, vim.api.nvim_buf_line_count(0)), a.col })",
   'vim.cmd("normal! zz")',
+  "end)",
   "return 1",
   "end)(_A)",
 ].join(" ");
