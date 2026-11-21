@@ -372,8 +372,12 @@ The nvim that `nv` opens beside a pi session, linked to it through `NV_SOCKET`.
 _Avoid_: side editor, nvim pane, split editor
 
 **Follow Mode**:
-The Companion Editor jumping to the first changed line and column of each successful `edit` or `write` in the main session. It never moves while the user is typing in the editor, and never overwrites an unsaved buffer. Toggled with `/follow`.
+The Companion Editor jumping on its own to the first changed line and column of each successful `edit` or `write` in the main session. It never moves while the user is typing in the editor, and never overwrites an unsaved buffer. Toggled with `/follow`, which affects only these automatic jumps.
 _Avoid_: auto-jump, sync mode, editor tracking
+
+**Change Summary**:
+The list shown when a run of the main session ends, naming each file it changed with `edit` or `write`, marked added or modified. Any file from the session can then be opened in the Companion Editor with `/changes`, at the most recent change to it. An open the user asked for follows the same safety rules as Follow Mode but says in pi when it held back. Files changed by `bash` are not listed. Only displayed: never sent to the model.
+_Avoid_: changed-files report, diff summary, file list
 
 ### Flagged ambiguities
 
