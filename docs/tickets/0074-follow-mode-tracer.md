@@ -30,5 +30,5 @@ The end-to-end path from a successful `edit` or `write` in the main pi session t
   - [x] a failed or blocked call (no jump)
 - [x] No `NV_SOCKET`: no handlers act and nothing is run
 - [x] A failing or timed-out `nvim --server` call is silent
-- [ ] Checked once by hand in herdr: after an `edit` and a `write`, the Companion Editor shows the changed spot
+- [x] Checked once by hand in herdr: after an `edit` and a `write`, the Companion Editor shows the changed spot
 - [x] `npm test` and `npm run typecheck` pass (apart from the existing `extensions/fold` errors)
